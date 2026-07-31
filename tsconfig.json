@@ -1,0 +1,9 @@
+{
+  "files": [],
+  "references": [
+    { "path": "plugins/memebot-ticket" },
+    { "path": "plugins/memebot-faq" },
+    { "path": "plugins/memebot-help" },
+    { "path": "plugins/memebot-broadcast" }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "name": "koishi-plugin-memebot-faq",
+  "version": "0.1.0",
+  "description": "常见问题菜单与查询插件",
+  "license": "MIT",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "files": [
+    "lib"
+  ],
+  "keywords": [
+    "chatbot",
+    "koishi",
+    "plugin",
+    "faq",
+    "memebot"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "peerDependencies": {
+    "koishi": "^4.18.7"
+  },
+  "devDependencies": {
+    "koishi": "^4.18.7"
+  }
+}

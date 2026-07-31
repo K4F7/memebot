@@ -1,0 +1,28 @@
+plugins:
+  group:server:
+    server:
+      host: 0.0.0.0
+      port: 5140
+  group:console:
+    console:
+      open: true
+    config: {}
+    explorer: {}
+    logger: {}
+    market: {}
+    sandbox: {}
+    theme-vanilla: {}
+  group:storage:
+    database-sqlite:
+      path: data/koishi.db
+  group:basic:
+    help: {}
+    rate-limit: {}
+  group:develop:
+    $if: env.NODE_ENV === 'development'
+    hmr:
+      root: ../..
+    memebot-ticket: {}
+    memebot-faq: {}
+    memebot-help: {}
+    memebot-broadcast: {}
