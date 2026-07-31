@@ -19,3 +19,4 @@ yarn build
 - `koishi-plugin-memebot-faq`：常见问题菜单与查询。
 - `koishi-plugin-memebot-help`：帮助文档与戳一戳响应。
 - `koishi-plugin-memebot-broadcast`：活动通知与广播。
+- `koishi-plugin-memebot-activity`：活动登记、查询与可选广播。
