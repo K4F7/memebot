@@ -261,3 +261,5 @@ export function apply(ctx: Context, config: Config) {
     }
   })
 }
+
+export default { name, Config, apply }

@@ -178,7 +178,7 @@ export class ArchiveService {
     this.requireAdmin(session)
     if (!input.attachment) throw new Error('Newspaper Issue PDF attachment required')
     const type = input.attachment.contentType?.toLowerCase()
-    if (type && type !== 'application/pdf' && !input.attachment.filename.toLowerCase().endsWith('.pdf')) {
+    if ((type && type !== 'application/pdf') || !input.attachment.filename.toLowerCase().endsWith('.pdf')) {
       throw new Error('Newspaper Issue attachment must be a PDF')
     }
     const id = this.id('issue')
@@ -308,3 +308,5 @@ export function apply(ctx: Context, config: Config) {
   root.subcommand('.retry', '重试附件 R2 同步').action(async ({ session }) => { service.requireAdmin(commandSession(session)); await service.retryPending(); return '已重试待同步附件。' })
   return service
 }
+
+export default { name, Config, apply }
