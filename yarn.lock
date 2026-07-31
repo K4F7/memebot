@@ -1858,7 +1858,6 @@ __metadata:
   resolution: "koishi-plugin-memebot-activity@workspace:plugins/memebot-activity"
   dependencies:
     koishi: "npm:^4.18.7"
-    typescript: "npm:^5.6.2"
     vitest: "npm:^3.2.4"
   peerDependencies:
     koishi: ^4.18.7
@@ -1868,18 +1867,6 @@ __metadata:
 "koishi-plugin-memebot-archive@workspace:plugins/memebot-archive":
   version: 0.0.0-use.local
   resolution: "koishi-plugin-memebot-archive@workspace:plugins/memebot-archive"
-  dependencies:
-    koishi: "npm:^4.18.7"
-    typescript: "npm:^5.6.2"
-    vitest: "npm:^3.2.4"
-  peerDependencies:
-    koishi: ^4.18.7
-  languageName: unknown
-  linkType: soft
-
-"koishi-plugin-memebot-broadcast@workspace:plugins/memebot-broadcast":
-  version: 0.0.0-use.local
-  resolution: "koishi-plugin-memebot-broadcast@workspace:plugins/memebot-broadcast"
   dependencies:
     koishi: "npm:^4.18.7"
   peerDependencies:
@@ -1892,18 +1879,6 @@ __metadata:
   resolution: "koishi-plugin-memebot-faq@workspace:plugins/memebot-faq"
   dependencies:
     koishi: "npm:^4.18.7"
-    typescript: "npm:^5.6.2"
-    vitest: "npm:^3.2.4"
-  peerDependencies:
-    koishi: ^4.18.7
-  languageName: unknown
-  linkType: soft
-
-"koishi-plugin-memebot-help@workspace:plugins/memebot-help":
-  version: 0.0.0-use.local
-  resolution: "koishi-plugin-memebot-help@workspace:plugins/memebot-help"
-  dependencies:
-    koishi: "npm:^4.18.7"
   peerDependencies:
     koishi: ^4.18.7
   languageName: unknown
@@ -1912,18 +1887,6 @@ __metadata:
 "koishi-plugin-memebot-intake@workspace:plugins/memebot-intake":
   version: 0.0.0-use.local
   resolution: "koishi-plugin-memebot-intake@workspace:plugins/memebot-intake"
-  dependencies:
-    koishi: "npm:^4.18.7"
-    typescript: "npm:^5.6.2"
-    vitest: "npm:^3.2.4"
-  peerDependencies:
-    koishi: ^4.18.7
-  languageName: unknown
-  linkType: soft
-
-"koishi-plugin-memebot-ticket@workspace:plugins/memebot-ticket":
-  version: 0.0.0-use.local
-  resolution: "koishi-plugin-memebot-ticket@workspace:plugins/memebot-ticket"
   dependencies:
     koishi: "npm:^4.18.7"
   peerDependencies:
