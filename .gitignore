@@ -4,6 +4,7 @@ cache
 data
 temp
 /app/
+.worktree/
 
 .env
 .env.*
