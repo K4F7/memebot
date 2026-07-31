@@ -2,7 +2,10 @@
   "files": [],
   "references": [
     { "path": "plugins/memebot-ticket" },
+    { "path": "plugins/memebot-intake" },
     { "path": "plugins/memebot-faq" },
+    { "path": "plugins/memebot-activity" },
+    { "path": "plugins/memebot-archive" },
     { "path": "plugins/memebot-help" },
     { "path": "plugins/memebot-broadcast" }
   ]
