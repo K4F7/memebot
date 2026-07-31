@@ -1858,6 +1858,7 @@ __metadata:
   resolution: "koishi-plugin-memebot-activity@workspace:plugins/memebot-activity"
   dependencies:
     koishi: "npm:^4.18.7"
+    typescript: "npm:^5.6.2"
     vitest: "npm:^3.2.4"
   peerDependencies:
     koishi: ^4.18.7
@@ -1869,6 +1870,8 @@ __metadata:
   resolution: "koishi-plugin-memebot-archive@workspace:plugins/memebot-archive"
   dependencies:
     koishi: "npm:^4.18.7"
+    typescript: "npm:^5.6.2"
+    vitest: "npm:^3.2.4"
   peerDependencies:
     koishi: ^4.18.7
   languageName: unknown
@@ -1879,6 +1882,8 @@ __metadata:
   resolution: "koishi-plugin-memebot-faq@workspace:plugins/memebot-faq"
   dependencies:
     koishi: "npm:^4.18.7"
+    typescript: "npm:^5.6.2"
+    vitest: "npm:^3.2.4"
   peerDependencies:
     koishi: ^4.18.7
   languageName: unknown
@@ -1889,6 +1894,8 @@ __metadata:
   resolution: "koishi-plugin-memebot-intake@workspace:plugins/memebot-intake"
   dependencies:
     koishi: "npm:^4.18.7"
+    typescript: "npm:^5.6.2"
+    vitest: "npm:^3.2.4"
   peerDependencies:
     koishi: ^4.18.7
   languageName: unknown
