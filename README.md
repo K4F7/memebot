@@ -6,10 +6,7 @@
 
 ```sh
 yarn install
-yarn dev
 ```
-
-Koishi 开发实例位于 `apps/koishi-dev`，默认控制台地址为 `http://localhost:5140`。
 
 ```sh
 yarn typecheck

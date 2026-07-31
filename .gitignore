@@ -3,6 +3,7 @@ dist
 cache
 data
 temp
+apps/koishi-dev/
 
 .env
 .env.*

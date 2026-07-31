@@ -3,12 +3,10 @@
   "private": true,
   "packageManager": "yarn@4.5.3",
   "workspaces": [
-    "apps/*",
     "plugins/*"
   ],
   "scripts": {
     "build": "yarn workspaces foreach --all --topological-dev run build",
-    "dev": "yarn workspace @memebot/koishi-dev dev",
     "typecheck": "yarn workspaces foreach --all --topological-dev run typecheck"
   },
   "devDependencies": {
