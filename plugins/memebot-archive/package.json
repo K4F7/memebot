@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-memebot-archive",
   "version": "0.1.0",
-  "description": "月度报纸与作品归档插件",
+  "description": "自用，月度报纸与作品归档插件",
   "license": "MIT",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",

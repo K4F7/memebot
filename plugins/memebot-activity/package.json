@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-memebot-activity",
   "version": "0.1.0",
-  "description": "社团活动登记、查询与广播插件",
+  "description": "自用，社团活动登记、查询与广播插件",
   "license": "MIT",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
