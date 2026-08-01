@@ -1,7 +1,6 @@
 {
   "name": "koishi-plugin-memebot-faq",
   "version": "0.1.0",
-  "type": "module",
   "description": "自用，常见问题菜单与查询插件",
   "license": "MIT",
   "main": "lib/index.js",
