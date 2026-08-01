@@ -38,7 +38,9 @@ yarn start
 - Continue an existing prerelease channel by incrementing its numeric suffix, for example `0.1.1-alpha.0` to `0.1.1-alpha.1`. Check npm before choosing the next version.
 - Publish one plugin at a time by pushing a tag named `<plugin-directory>-v<version>`, for example `memebot-faq-v0.1.1-alpha.1`.
 - The tag version must exactly match that plugin's `package.json`. Releasing multiple plugins requires one tag per plugin.
+- Push each release tag with a separate `git push` command. GitHub does not create tag push events when more than three tags are pushed at once.
 - `.github/workflows/publish.yml` validates the tag, checks and builds the full repository, then publishes only the matched package to npm using `NPM_TOKEN`. Prerelease versions use their first suffix component as the npm dist-tag (`alpha`, `beta`, or `rc`); stable versions use `latest`.
+- A successful npm publish is the release outcome. Do not create a GitHub Release unless explicitly requested.
 - Never reuse or move a published release tag. Create a new patch version for follow-up fixes.
 
 ## Agent skills
