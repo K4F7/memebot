@@ -68,6 +68,27 @@ describe('standalone plugin command smoke behaviors', () => {
     await expect(service.associateWork({ authority: 1 }, 'P1', { workId: 'W1' })).rejects.toThrow('permission')
   })
 
+  it('shows the Archive target and requires explicit confirmation before soft deletion', async () => {
+    const harness = await createKoishiTestHarness(archive, { administrators: [{ qq: '10002' }], managementGroups: [] })
+    harnesses.push(harness)
+    const service = harness.pluginResult as ArchiveService
+    const client = await harness.client({ userId: '10002', channelId: '20001' })
+    await client.receive('archive.issues')
+    service.db.works.push({ id: 'W1', title: 'Work to remove', author: 'Alice', publishedAt: new Date(), lifecycle: 'active' })
+
+    const started = client.receive('archive.rm W1')
+    await new Promise<void>(resolve => setImmediate(resolve))
+    const confirmation = client.receive('确认')
+    await confirmation
+
+    await expect(started).resolves.toEqual(expect.arrayContaining([
+      expect.stringContaining('W1 Alice - Work to remove'),
+      expect.stringContaining('已移除 Work W1，保留 30 天'),
+    ]))
+    expect(service.getWork('W1')).toBeUndefined()
+    expect(service.listRemoved({ authority: 4 })[0]).toMatchObject({ id: 'W1', lifecycle: 'removed' })
+  })
+
   it('represents QQ-style IDs and quoted messages at the Mock boundary', async () => {
     const harness = await createKoishiTestHarness(archive, {})
     harnesses.push(harness)

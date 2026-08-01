@@ -32,7 +32,8 @@ describe('archive integration paths', () => {
     const root = await tempRoot()
     const listeners: string[] = []
     const entries: unknown[] = []
-    const ctx = { console: { addEntry(entry: unknown) { entries.push(entry) }, addListener(name: string) { listeners.push(name) } } } as any
+    const authorities = new Map<string, number | undefined>()
+    const ctx = { console: { addEntry(entry: unknown) { entries.push(entry) }, addListener(name: string, _handler: unknown, options?: { authority?: number }) { listeners.push(name); authorities.set(name, options?.authority) } } } as any
     new ArchiveConsoleFeatures(ctx, new ArchiveService({ config: { localPath: root } }), Promise.resolve()).register()
     expect(entries).toHaveLength(1)
     expect(listeners).toEqual(expect.arrayContaining([
@@ -43,7 +44,28 @@ describe('archive integration paths', () => {
       'memebot/archive/work/tree', 'memebot/archive/work/preview', 'memebot/archive/work/download', 'memebot/archive/work/details',
       'memebot/archive/appearance/save', 'memebot/archive/appearance/remove',
       'memebot/archive/restore/preview', 'memebot/archive/restore/apply', 'memebot/archive/restore/history',
+      'memebot/archive/removed', 'memebot/archive/record/remove', 'memebot/archive/record/restore', 'memebot/archive/record/purge',
+      'memebot/archive/record/anonymize', 'memebot/archive/attachments/retired', 'memebot/archive/attachment/restore', 'memebot/archive/lifecycle/history',
     ]))
+    for (const name of ['memebot/archive/removed', 'memebot/archive/record/remove', 'memebot/archive/record/restore', 'memebot/archive/record/purge', 'memebot/archive/record/anonymize', 'memebot/archive/attachments/retired', 'memebot/archive/attachment/restore', 'memebot/archive/lifecycle/history']) {
+      expect(authorities.get(name), name).toBe(4)
+    }
+  })
+  it('blocks removed Work preview files at every Console attachment route', async () => {
+    const root = await tempRoot()
+    const handlers = new Map<string, (...args: any[]) => Promise<any>>()
+    const ctx = { console: { addEntry() {}, addListener(name: string, handler: (...args: any[]) => Promise<any>) { handlers.set(name, handler) } } } as any
+    const service = new ArchiveService({ config: { localPath: root }, db: {
+      issues: [{ id: 'P1', issueNumber: '1', month: '2026-08', title: 'Removed Paper', publishedAt: new Date(), lifecycle: 'removed' }],
+      works: [{ id: 'W1', title: 'Removed', author: 'Alice', publishedAt: new Date(), lifecycle: 'removed' }],
+    } })
+    new ArchiveConsoleFeatures(ctx, service, Promise.resolve()).register()
+
+    await expect(handlers.get('memebot/archive/work/tree')!('W1')).rejects.toThrow('已移除')
+    await expect(handlers.get('memebot/archive/work/preview')!('W1', 'README.txt')).rejects.toThrow('已移除')
+    await expect(handlers.get('memebot/archive/work/file')!('W1', 'README.txt')).rejects.toThrow('已移除')
+    await expect(handlers.get('memebot/archive/paper/preview')!('P1')).rejects.toThrow('不存在')
+    await expect(handlers.get('memebot/archive/paper/download')!('P1')).rejects.toThrow('不存在')
   })
   it('keeps R2 failures retryable and eventually syncs', async () => {
     const root = await tempRoot()

@@ -2,10 +2,10 @@ import { createHash } from 'node:crypto'
 import { access, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 import { Context, h, Schema } from 'koishi'
-import { ArchivePreflight, BackupContext, BackupStatusSink, PersistentArchiveBackupQueue, WorkPreviewStore } from './extensions'
+import { ArchivePreflight, BackupContext, BackupStatusSink, PersistentArchiveBackupQueue, PersistentArchiveCleanupQueue, WorkPreviewStore } from './extensions'
 import { S3R2Store } from './s3'
 
-export { ArchivePreflight, PersistentArchiveBackupQueue, WorkPreviewStore } from './extensions'
+export { ArchivePreflight, PersistentArchiveBackupQueue, PersistentArchiveCleanupQueue, WorkPreviewStore } from './extensions'
 
 export const name = 'memebot-archive'
 export const inject = ['database', 'console']
@@ -62,7 +62,11 @@ export interface NewspaperIssue {
   attachment?: Attachment
   publishedAt: Date
   updatedAt?: Date
-  lifecycle?: 'active' | 'removed'
+  lifecycle?: 'active' | 'removed' | 'purged'
+  removedAt?: Date
+  expiresAt?: Date
+  purgedAt?: Date
+  anonymizedAt?: Date
   backupState?: 'disabled' | 'pending' | 'failed' | 'complete'
   backupError?: string
 }
@@ -75,7 +79,11 @@ export interface Work {
   attachment?: Attachment
   publishedAt: Date
   updatedAt?: Date
-  lifecycle?: 'active' | 'removed'
+  lifecycle?: 'active' | 'removed' | 'purged'
+  removedAt?: Date
+  expiresAt?: Date
+  purgedAt?: Date
+  anonymizedAt?: Date
   backupState?: 'disabled' | 'pending' | 'failed' | 'complete'
   backupError?: string
 }
@@ -88,6 +96,28 @@ export interface PublicationAppearance {
   displayOrder: number
   createdAt: Date
   updatedAt: Date
+}
+
+export interface RetiredArchiveAttachment {
+  id: string
+  recordKind: ArchiveRecordKind
+  recordId: string
+  attachment: Attachment
+  lifecycle: 'retired' | 'restored' | 'purged'
+  removedAt: Date
+  expiresAt: Date
+  restoredAt?: Date
+  purgedAt?: Date
+}
+
+export interface ArchiveLifecycleAuditEntry {
+  id: string
+  actor: string
+  recordKind: ArchiveRecordKind
+  recordId: string
+  action: 'remove' | 'restore' | 'purge' | 'anonymize'
+  details: string
+  createdAt: Date
 }
 
 export type ArchiveRecordKind = 'paper' | 'work'
@@ -128,6 +158,7 @@ export interface ArchiveDatabase {
   issues: NewspaperIssue[]
   works: Work[]
   appearances: PublicationAppearance[]
+  retiredAttachments: RetiredArchiveAttachment[]
 }
 
 declare module 'koishi' {
@@ -140,7 +171,11 @@ declare module 'koishi' {
       description: string
       sourceLink: string
       attachment: string
-      lifecycle: 'active' | 'removed'
+      lifecycle: 'active' | 'removed' | 'purged'
+      removedAt: Date
+      expiresAt: Date
+      purgedAt: Date
+      anonymizedAt: Date
       backupState: 'disabled' | 'pending' | 'failed' | 'complete'
       backupError: string
       publishedAt: Date
@@ -153,7 +188,11 @@ declare module 'koishi' {
       author: string
       description: string
       attachment: string
-      lifecycle: 'active' | 'removed'
+      lifecycle: 'active' | 'removed' | 'purged'
+      removedAt: Date
+      expiresAt: Date
+      purgedAt: Date
+      anonymizedAt: Date
       backupState: 'disabled' | 'pending' | 'failed' | 'complete'
       backupError: string
       publishedAt: Date
@@ -169,6 +208,36 @@ declare module 'koishi' {
       attempts: number
       nextAttemptAt: Date
       error: string
+    }
+    archiveCleanupJob: {
+      id: string
+      recordKind: 'paper' | 'work'
+      recordId: string
+      objectKeys: string
+      state: 'pending' | 'failed' | 'complete'
+      attempts: number
+      nextAttemptAt: Date
+      error: string
+    }
+    archiveRetiredAttachment: {
+      id: string
+      recordKind: 'paper' | 'work'
+      recordId: string
+      attachment: string
+      lifecycle: 'retired' | 'restored' | 'purged'
+      removedAt: Date
+      expiresAt: Date
+      restoredAt: Date
+      purgedAt: Date
+    }
+    archiveLifecycleAudit: {
+      id: string
+      actor: string
+      recordKind: 'paper' | 'work'
+      recordId: string
+      action: 'remove' | 'restore' | 'purge' | 'anonymize'
+      details: string
+      createdAt: Date
     }
     archivePublicationAppearance: {
       paperId: string
@@ -203,6 +272,11 @@ export interface ArchiveMetadataRepository {
   loadAppearances(): Promise<PublicationAppearance[]>
   upsertAppearance(appearance: PublicationAppearance): Promise<void>
   removeAppearance(paperId: string, workId: string): Promise<void>
+  loadRetiredAttachments(): Promise<RetiredArchiveAttachment[]>
+  createRetiredAttachment(item: RetiredArchiveAttachment): Promise<void>
+  updateRetiredAttachment(item: RetiredArchiveAttachment): Promise<void>
+  appendLifecycleAudit(entry: ArchiveLifecycleAuditEntry): Promise<void>
+  loadLifecycleAudit(): Promise<ArchiveLifecycleAuditEntry[]>
   importRecord(kind: ArchiveRecordKind, item: NewspaperIssue | Work, manifest: ArchiveManifest): Promise<void>
   importRecords(records: Array<{ kind: ArchiveRecordKind; item: NewspaperIssue | Work; manifest: ArchiveManifest }>): Promise<void>
   appendRestoreAudit(entry: RestoreAuditEntry): Promise<void>
@@ -217,7 +291,11 @@ export class KoishiArchiveMetadataRepository implements ArchiveMetadataRepositor
       id: String(row.id), issueNumber: String(row.issueNumber), month: String(row.month), title: String(row.title),
       description: String(row.description || '') || undefined, sourceLink: String(row.sourceLink || '') || undefined,
       attachment: row.attachment ? JSON.parse(String(row.attachment)) : undefined,
-      lifecycle: (row.lifecycle || 'active') as 'active' | 'removed',
+      lifecycle: (row.lifecycle || 'active') as 'active' | 'removed' | 'purged',
+      removedAt: row.removedAt ? new Date(row.removedAt as string | number) : undefined,
+      expiresAt: row.expiresAt ? new Date(row.expiresAt as string | number) : undefined,
+      purgedAt: row.purgedAt ? new Date(row.purgedAt as string | number) : undefined,
+      anonymizedAt: row.anonymizedAt ? new Date(row.anonymizedAt as string | number) : undefined,
       backupState: (row.backupState || 'disabled') as NewspaperIssue['backupState'], backupError: String(row.backupError || '') || undefined,
       publishedAt: new Date(row.publishedAt as string | number), updatedAt: new Date(row.updatedAt as string | number),
     }))
@@ -234,21 +312,27 @@ export class KoishiArchiveMetadataRepository implements ArchiveMetadataRepositor
     await this.ctx.model.create('archivePaper', {
       id: paper.id, issueNumber: paper.issueNumber, month: paper.month, title: paper.title,
       description: paper.description ?? '', sourceLink: paper.sourceLink ?? '', attachment: JSON.stringify(paper.attachment),
-      lifecycle: paper.lifecycle ?? 'active', backupState: paper.backupState ?? 'disabled', backupError: paper.backupError ?? '', publishedAt: paper.publishedAt, updatedAt: now,
+      lifecycle: paper.lifecycle ?? 'active', removedAt: paper.removedAt, expiresAt: paper.expiresAt, purgedAt: paper.purgedAt, anonymizedAt: paper.anonymizedAt,
+      backupState: paper.backupState ?? 'disabled', backupError: paper.backupError ?? '', publishedAt: paper.publishedAt, updatedAt: now,
     })
   }
   async updatePaper(paper: NewspaperIssue) {
     await this.ctx.model.set('archivePaper', { id: paper.id }, {
       issueNumber: paper.issueNumber, month: paper.month, title: paper.title,
       description: paper.description ?? '', sourceLink: paper.sourceLink ?? '', attachment: JSON.stringify(paper.attachment),
-      lifecycle: paper.lifecycle ?? 'active', backupState: paper.backupState ?? 'disabled', backupError: paper.backupError ?? '', updatedAt: paper.updatedAt ?? new Date(),
+      lifecycle: paper.lifecycle ?? 'active', removedAt: paper.removedAt, expiresAt: paper.expiresAt, purgedAt: paper.purgedAt, anonymizedAt: paper.anonymizedAt,
+      backupState: paper.backupState ?? 'disabled', backupError: paper.backupError ?? '', updatedAt: paper.updatedAt ?? new Date(),
     })
   }
   async loadWorks() {
     const rows = await this.ctx.model.get('archiveWork', {}) as unknown as Array<Record<string, unknown>>
     return rows.map(row => ({
       id: String(row.id), title: String(row.title), author: String(row.author), description: String(row.description || '') || undefined,
-      attachment: row.attachment ? JSON.parse(String(row.attachment)) : undefined, lifecycle: (row.lifecycle || 'active') as 'active' | 'removed',
+      attachment: row.attachment ? JSON.parse(String(row.attachment)) : undefined, lifecycle: (row.lifecycle || 'active') as 'active' | 'removed' | 'purged',
+      removedAt: row.removedAt ? new Date(row.removedAt as string | number) : undefined,
+      expiresAt: row.expiresAt ? new Date(row.expiresAt as string | number) : undefined,
+      purgedAt: row.purgedAt ? new Date(row.purgedAt as string | number) : undefined,
+      anonymizedAt: row.anonymizedAt ? new Date(row.anonymizedAt as string | number) : undefined,
       backupState: (row.backupState || 'disabled') as Work['backupState'], backupError: String(row.backupError || '') || undefined,
       publishedAt: new Date(row.publishedAt as string | number), updatedAt: new Date(row.updatedAt as string | number),
     }))
@@ -263,12 +347,14 @@ export class KoishiArchiveMetadataRepository implements ArchiveMetadataRepositor
   async createWork(work: Work) {
     await this.ctx.model.create('archiveWork', {
       id: work.id, title: work.title, author: work.author, description: work.description ?? '', attachment: JSON.stringify(work.attachment), lifecycle: work.lifecycle ?? 'active',
+      removedAt: work.removedAt, expiresAt: work.expiresAt, purgedAt: work.purgedAt, anonymizedAt: work.anonymizedAt,
       backupState: work.backupState ?? 'disabled', backupError: work.backupError ?? '', publishedAt: work.publishedAt, updatedAt: work.updatedAt ?? work.publishedAt,
     })
   }
   async updateWork(work: Work) {
     await this.ctx.model.set('archiveWork', { id: work.id }, {
       title: work.title, author: work.author, description: work.description ?? '', attachment: JSON.stringify(work.attachment), lifecycle: work.lifecycle ?? 'active',
+      removedAt: work.removedAt, expiresAt: work.expiresAt, purgedAt: work.purgedAt, anonymizedAt: work.anonymizedAt,
       backupState: work.backupState ?? 'disabled', backupError: work.backupError ?? '', updatedAt: work.updatedAt ?? new Date(),
     })
   }
@@ -292,6 +378,25 @@ export class KoishiArchiveMetadataRepository implements ArchiveMetadataRepositor
   }
   async removeAppearance(paperId: string, workId: string) {
     await this.ctx.model.remove('archivePublicationAppearance', { paperId, workId })
+  }
+  async loadRetiredAttachments() {
+    const rows = await this.ctx.model.get('archiveRetiredAttachment', {}) as unknown as Array<Record<string, unknown>>
+    return rows.map(row => ({
+      id: String(row.id), recordKind: row.recordKind as ArchiveRecordKind, recordId: String(row.recordId), attachment: JSON.parse(String(row.attachment)),
+      lifecycle: row.lifecycle as RetiredArchiveAttachment['lifecycle'], removedAt: new Date(row.removedAt as string | number), expiresAt: new Date(row.expiresAt as string | number),
+      restoredAt: row.restoredAt ? new Date(row.restoredAt as string | number) : undefined, purgedAt: row.purgedAt ? new Date(row.purgedAt as string | number) : undefined,
+    }))
+  }
+  async createRetiredAttachment(item: RetiredArchiveAttachment) {
+    await this.ctx.model.create('archiveRetiredAttachment', { ...item, attachment: JSON.stringify(item.attachment), restoredAt: item.restoredAt, purgedAt: item.purgedAt })
+  }
+  async updateRetiredAttachment(item: RetiredArchiveAttachment) {
+    await this.ctx.model.set('archiveRetiredAttachment', { id: item.id }, { attachment: JSON.stringify(item.attachment), lifecycle: item.lifecycle, restoredAt: item.restoredAt, purgedAt: item.purgedAt })
+  }
+  async appendLifecycleAudit(entry: ArchiveLifecycleAuditEntry) { await this.ctx.model.create('archiveLifecycleAudit', { ...entry }) }
+  async loadLifecycleAudit() {
+    const rows = await this.ctx.model.get('archiveLifecycleAudit', {}) as unknown as ArchiveLifecycleAuditEntry[]
+    return rows.map(row => ({ ...row, createdAt: new Date(row.createdAt) })).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
   }
   async importRecord(kind: ArchiveRecordKind, item: NewspaperIssue | Work, manifest: ArchiveManifest) {
     const existing = kind === 'paper'
@@ -352,6 +457,13 @@ export interface R2Store {
 
 export interface ArchiveBackupQueue {
   enqueue(attachment: Attachment, context?: BackupContext): Promise<void>
+  runDue?(): Promise<void>
+  retryNow?(recordId?: string): Promise<void>
+  counts?(): Promise<{ pending: number; failed: number; complete: number }>
+}
+
+export interface ArchiveCleanupQueue {
+  enqueue(recordKind: ArchiveRecordKind, recordId: string, objectKeys: string[]): Promise<void>
   runDue?(): Promise<void>
   retryNow?(recordId?: string): Promise<void>
   counts?(): Promise<{ pending: number; failed: number; complete: number }>
@@ -450,10 +562,10 @@ export class MemoryR2Store implements R2Store {
 export class LocalAttachmentStore {
   constructor(readonly root: string, readonly r2?: R2Store, readonly objectPrefix = 'memebot-archive') {}
 
-  async save(id: string, input: AttachmentInput): Promise<Attachment> {
+  async save(id: string, input: AttachmentInput, version?: string): Promise<Attachment> {
     const data = typeof input.data === 'string' ? new TextEncoder().encode(input.data) : input.data
     const safeName = input.filename.replace(/[^a-zA-Z0-9._-]/g, '_')
-    const relativePath = join(id, safeName).replaceAll('\\', '/')
+    const relativePath = join(id, version ? `${version}-${safeName}` : safeName).replaceAll('\\', '/')
     const fullPath = this.fullPath(relativePath)
     await mkdir(dirname(fullPath), { recursive: true })
     await writeFile(fullPath, data)
@@ -528,6 +640,7 @@ export class LocalAttachmentStore {
     }
     return attachment
   }
+  async delete(attachment: Attachment) { await unlink(this.fullPath(attachment.relativePath)).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error }) }
   private fullPath(relativePath: string) {
     const root = resolve(this.root)
     const target = resolve(root, relativePath)
@@ -549,34 +662,40 @@ export class ArchiveService {
   private paperSequence = 0
   private workSequence = 0
   private restoreAuditSequence = 0
+  private lifecycleAuditSequence = 0
   private readonly metadata?: ArchiveMetadataRepository
   private readonly backupQueue?: ArchiveBackupQueue
   private readonly r2?: R2Store
+  private readonly cleanupQueue?: ArchiveCleanupQueue
+  private readonly now: () => Date
   readonly previews: WorkPreviewStore
   readonly fallbackEvents: Array<{ id: string; kind: 'issue' | 'work'; reason: string }> = []
 
-  constructor(options: { config?: Partial<Config>; db?: Partial<ArchiveDatabase>; local?: LocalAttachmentStore; r2?: R2Store; metadata?: ArchiveMetadataRepository; backupQueue?: ArchiveBackupQueue; previews?: WorkPreviewStore }) {
+  constructor(options: { config?: Partial<Config>; db?: Partial<ArchiveDatabase>; local?: LocalAttachmentStore; r2?: R2Store; metadata?: ArchiveMetadataRepository; backupQueue?: ArchiveBackupQueue; cleanupQueue?: ArchiveCleanupQueue; previews?: WorkPreviewStore; now?: () => Date }) {
     this.config = {
       administrators: [], managementGroups: [], localPath: 'data/memebot-archive', paperMaxMb: 100, workMaxMb: 500,
       r2: { enabled: false, accountId: '', bucketName: '', accessKeyId: '', secretAccessKey: '', objectPrefix: 'memebot-archive' },
       ...options.config,
     }
-    this.db = { issues: options.db?.issues ?? [], works: options.db?.works ?? [], appearances: options.db?.appearances ?? [] }
+    this.db = { issues: options.db?.issues ?? [], works: options.db?.works ?? [], appearances: options.db?.appearances ?? [], retiredAttachments: options.db?.retiredAttachments ?? [] }
     this.local = options.local ?? new LocalAttachmentStore(this.config.localPath, options.r2, this.config.r2.objectPrefix)
     this.previews = options.previews ?? new WorkPreviewStore(join(this.config.localPath, '.previews'))
     this.metadata = options.metadata
     this.r2 = options.r2
     this.backupQueue = options.backupQueue ?? (options.r2 ? new ImmediateArchiveBackupQueue(this.local) : undefined)
+    this.cleanupQueue = options.cleanupQueue
+    this.now = options.now ?? (() => new Date())
   }
 
   async initialize() {
     if (!this.metadata) return
-    const [papers, works, appearances] = await Promise.all([this.metadata.loadPapers(), this.metadata.loadWorks(), this.metadata.loadAppearances()])
+    const [papers, works, appearances, retiredAttachments] = await Promise.all([this.metadata.loadPapers(), this.metadata.loadWorks(), this.metadata.loadAppearances(), this.metadata.loadRetiredAttachments()])
     const addedPapers = this.db.issues.filter(item => !papers.some(paper => paper.id === item.id))
     const addedWorks = this.db.works.filter(item => !works.some(work => work.id === item.id))
     this.db.issues.splice(0, this.db.issues.length, ...papers, ...addedPapers)
     this.db.works.splice(0, this.db.works.length, ...works, ...addedWorks)
     this.db.appearances.splice(0, this.db.appearances.length, ...appearances)
+    this.db.retiredAttachments.splice(0, this.db.retiredAttachments.length, ...retiredAttachments)
   }
 
   isAdmin(session: ArchiveSession): boolean {
@@ -641,7 +760,10 @@ export class ArchiveService {
     const issue = this.getIssue(id)
     if (!issue) throw new Error('Newspaper Issue not found')
     validatePdfAttachment(attachmentInput, this.config.paperMaxMb)
-    issue.attachment = await this.local.save(issue.id, attachmentInput)
+    const previous = issue.attachment
+    const replacement = await this.local.save(issue.id, attachmentInput, `v${this.now().getTime()}`)
+    if (previous) await this.retireAttachment('paper', issue.id, previous)
+    issue.attachment = replacement
     issue.updatedAt = new Date(); issue.backupState = this.backupQueue ? 'pending' : 'disabled'; delete issue.backupError
     if (this.metadata) await this.metadata.updatePaper(issue)
     if (this.backupQueue) await this.enqueueBackup('paper', issue)
@@ -649,7 +771,7 @@ export class ArchiveService {
   }
   async updateWork(session: ArchiveSession, id: string, patch: Partial<Omit<WorkInput, 'attachment'>>, confirmation?: string) {
     this.requireConfirmation(session, confirmation)
-    const work = this.db.works.find(item => item.id === id)
+    const work = this.getWork(id)
     if (!work) throw new Error('Work not found')
     Object.assign(work, validateWorkMetadata({ ...work, ...patch }))
     work.updatedAt = new Date()
@@ -664,7 +786,10 @@ export class ArchiveService {
     if (!work) throw new Error('Work not found')
     const data = workBytes(attachmentInput, this.config.workMaxMb)
     await this.previews.build(work.id, data)
-    work.attachment = await this.local.save(work.id, { ...attachmentInput, data })
+    const previous = work.attachment
+    const replacement = await this.local.save(work.id, { ...attachmentInput, data }, `v${this.now().getTime()}`)
+    if (previous) await this.retireAttachment('work', work.id, previous)
+    work.attachment = replacement
     work.updatedAt = new Date(); work.backupState = this.backupQueue ? 'pending' : 'disabled'; delete work.backupError
     if (this.metadata) await this.metadata.updateWork(work)
     if (this.backupQueue) await this.enqueueBackup('work', work)
@@ -674,26 +799,179 @@ export class ArchiveService {
     this.requireConfirmation(session, confirmation)
     const issue = this.getIssue(id)
     if (!issue) throw new Error('Newspaper Issue not found')
-    issue.lifecycle = 'removed'; issue.updatedAt = new Date()
+    const removedAt = this.now()
+    issue.lifecycle = 'removed'; issue.removedAt = removedAt; issue.expiresAt = new Date(removedAt.getTime() + 30 * 24 * 60 * 60_000); issue.updatedAt = removedAt
     if (this.metadata) await this.metadata.updatePaper(issue)
+    if (issue.attachment && this.backupQueue) await this.enqueueBackup('paper', issue)
+    await this.appendLifecycleAudit(session, 'paper', issue.id, 'remove', { expiresAt: issue.expiresAt })
     return issue
   }
-  async removeWork(session: ArchiveSession, id: string, confirmation?: string) { this.requireConfirmation(session, confirmation); const work = this.getWork(id); if (!work) throw new Error('Work not found'); work.lifecycle = 'removed'; work.updatedAt = new Date(); if (this.metadata) await this.metadata.updateWork(work); return work }
+  async removeWork(session: ArchiveSession, id: string, confirmation?: string) {
+    this.requireConfirmation(session, confirmation)
+    const work = this.getWork(id)
+    if (!work) throw new Error('Work not found')
+    const removedAt = this.now()
+    work.lifecycle = 'removed'; work.removedAt = removedAt; work.expiresAt = new Date(removedAt.getTime() + 30 * 24 * 60 * 60_000); work.updatedAt = removedAt
+    if (this.metadata) await this.metadata.updateWork(work)
+    if (work.attachment && this.backupQueue) await this.enqueueBackup('work', work)
+    await this.appendLifecycleAudit(session, 'work', work.id, 'remove', { expiresAt: work.expiresAt })
+    return work
+  }
 
-  listIssues(month?: string) { return this.db.issues.filter(item => item.lifecycle !== 'removed' && (!month || item.month === month)).sort((a, b) => b.month.localeCompare(a.month) || b.title.localeCompare(a.title)) }
+  listRemoved(session: ArchiveSession) {
+    this.requireAdmin(session)
+    return [
+      ...this.db.issues.filter(item => item.lifecycle === 'removed' || item.lifecycle === 'purged').map(item => ({ kind: 'paper' as const, id: item.id, title: item.title, lifecycle: item.lifecycle, removedAt: item.removedAt, expiresAt: item.expiresAt, purgedAt: item.purgedAt })),
+      ...this.db.works.filter(item => item.lifecycle === 'removed' || item.lifecycle === 'purged').map(item => ({ kind: 'work' as const, id: item.id, title: item.title, author: item.author, lifecycle: item.lifecycle, removedAt: item.removedAt, expiresAt: item.expiresAt, purgedAt: item.purgedAt })),
+    ].sort((a, b) => (b.removedAt?.getTime() ?? 0) - (a.removedAt?.getTime() ?? 0) || a.id.localeCompare(b.id))
+  }
+
+  async restoreRecord(session: ArchiveSession, id: string) {
+    this.requireAdmin(session)
+    const item = id.toUpperCase().startsWith('P')
+      ? this.db.issues.find(value => value.id.localeCompare(id, undefined, { sensitivity: 'base' }) === 0 && value.lifecycle === 'removed')
+      : this.db.works.find(value => value.id.localeCompare(id, undefined, { sensitivity: 'base' }) === 0 && value.lifecycle === 'removed')
+    if (!item) throw new Error('Removed Archive record not found')
+    item.lifecycle = 'active'; delete item.removedAt; delete item.expiresAt; item.updatedAt = this.now()
+    if (item.id.startsWith('P')) await this.metadata?.updatePaper(item as NewspaperIssue)
+    else await this.metadata?.updateWork(item as Work)
+    if (item.attachment && this.backupQueue) await this.enqueueBackup(item.id.startsWith('P') ? 'paper' : 'work', item)
+    await this.appendLifecycleAudit(session, item.id.startsWith('P') ? 'paper' : 'work', item.id, 'restore')
+    return item
+  }
+
+  async anonymizeRecord(session: ArchiveSession, id: string, confirmation?: string) {
+    this.requireConfirmation(session, confirmation)
+    const kind: ArchiveRecordKind = id.toUpperCase().startsWith('P') ? 'paper' : 'work'
+    const item = kind === 'paper'
+      ? this.db.issues.find(value => value.id.localeCompare(id, undefined, { sensitivity: 'base' }) === 0)
+      : this.db.works.find(value => value.id.localeCompare(id, undefined, { sensitivity: 'base' }) === 0)
+    if (!item) throw new Error('Archive record not found')
+    if (kind === 'paper') {
+      const paper = item as NewspaperIssue
+      paper.description = undefined; paper.sourceLink = undefined
+      paper.anonymizedAt = this.now(); paper.updatedAt = paper.anonymizedAt
+      await this.metadata?.updatePaper(paper)
+    } else {
+      const work = item as Work
+      work.author = '已匿名'; work.description = undefined
+      work.anonymizedAt = this.now(); work.updatedAt = work.anonymizedAt
+      await this.metadata?.updateWork(work)
+    }
+    await this.appendLifecycleAudit(session, kind, item.id, 'anonymize')
+    return item
+  }
+
+  async lifecycleHistory(session: ArchiveSession, recordId?: string) {
+    this.requireAdmin(session)
+    const history = await this.metadata?.loadLifecycleAudit() ?? []
+    return recordId ? history.filter(item => item.recordId.localeCompare(recordId, undefined, { sensitivity: 'base' }) === 0) : history
+  }
+
+  listRetiredAttachments(session: ArchiveSession, recordId?: string) {
+    this.requireAdmin(session)
+    return this.db.retiredAttachments.filter(item => item.lifecycle === 'retired' && (!recordId || item.recordId.localeCompare(recordId, undefined, { sensitivity: 'base' }) === 0)).sort((a, b) => b.removedAt.getTime() - a.removedAt.getTime() || a.id.localeCompare(b.id))
+  }
+
+  async restoreRetiredAttachment(session: ArchiveSession, retiredId: string) {
+    this.requireAdmin(session)
+    const retired = this.db.retiredAttachments.find(item => item.id === retiredId && item.lifecycle === 'retired')
+    if (!retired || retired.expiresAt <= this.now()) throw new Error('Retired attachment not found or expired')
+    const item = retired.recordKind === 'paper' ? this.getIssue(retired.recordId) : this.getWork(retired.recordId)
+    if (!item?.attachment) throw new Error('Active Archive record not found')
+    await this.retireAttachment(retired.recordKind, retired.recordId, item.attachment)
+    item.attachment = retired.attachment; item.updatedAt = this.now(); item.backupState = this.backupQueue ? 'pending' : 'disabled'; delete item.backupError
+    retired.lifecycle = 'restored'; retired.restoredAt = this.now()
+    await this.metadata?.updateRetiredAttachment(retired)
+    if (retired.recordKind === 'paper') await this.metadata?.updatePaper(item as NewspaperIssue)
+    else {
+      await this.previews.build(item.id, await this.local.read(item.attachment))
+      await this.metadata?.updateWork(item as Work)
+    }
+    if (this.backupQueue) await this.enqueueBackup(retired.recordKind, item)
+    return item
+  }
+
+  async purgeRecord(session: ArchiveSession, id: string, confirmation?: string) {
+    this.requireConfirmation(session, confirmation)
+    const item = id.toUpperCase().startsWith('P')
+      ? this.db.issues.find(value => value.id.localeCompare(id, undefined, { sensitivity: 'base' }) === 0 && value.lifecycle === 'removed')
+      : this.db.works.find(value => value.id.localeCompare(id, undefined, { sensitivity: 'base' }) === 0 && value.lifecycle === 'removed')
+    if (!item) throw new Error('Removed Archive record not found')
+    return this.purge(item, session.userId ?? `authority:${session.authority ?? 0}`)
+  }
+
+  async purgeExpired() {
+    const expired = [...this.db.issues, ...this.db.works].filter(item => item.lifecycle === 'removed' && !!item.expiresAt && item.expiresAt <= this.now())
+    for (const item of expired) await this.purge(item, 'system:expiry')
+    const retired = this.db.retiredAttachments.filter(item => item.lifecycle === 'retired' && item.expiresAt <= this.now())
+    for (const item of retired) {
+      if (this.cleanupQueue && item.attachment.r2?.objectKey) await this.cleanupQueue.enqueue(item.recordKind, item.recordId, [item.attachment.r2.objectKey])
+      await this.local.delete(item.attachment)
+      item.lifecycle = 'purged'; item.purgedAt = this.now()
+      await this.metadata?.updateRetiredAttachment(item)
+    }
+    if (retired.length && this.cleanupQueue?.runDue) await this.cleanupQueue.runDue()
+    return expired.length + retired.length
+  }
+
+  private async purge(item: NewspaperIssue | Work, actor: string) {
+    const kind: ArchiveRecordKind = item.id.startsWith('P') ? 'paper' : 'work'
+    const attachment = item.attachment
+    if (attachment && this.cleanupQueue) {
+      const prefix = this.config.r2.objectPrefix.replace(/^\/+|\/+$/g, '')
+      await this.cleanupQueue.enqueue(kind, item.id, [attachment.r2?.objectKey ?? '', `${prefix}/manifests/${kind}/${item.id}.json`])
+    }
+    if (attachment) await this.local.delete(attachment)
+    if (kind === 'work') await this.previews.remove(item.id)
+    item.attachment = undefined; item.lifecycle = 'purged'; item.purgedAt = this.now(); item.updatedAt = item.purgedAt
+    if (kind === 'paper') await this.metadata?.updatePaper(item as NewspaperIssue)
+    else await this.metadata?.updateWork(item as Work)
+    await this.appendLifecycleAudit({ userId: actor, authority: 4 }, kind, item.id, 'purge')
+    if (this.cleanupQueue?.runDue) await this.cleanupQueue.runDue()
+    return item
+  }
+
+  private async retireAttachment(recordKind: ArchiveRecordKind, recordId: string, attachment: Attachment) {
+    const removedAt = this.now()
+    const retired: RetiredArchiveAttachment = {
+      id: `${recordId}-${removedAt.getTime()}-${attachment.checksum.slice(0, 12)}`, recordKind, recordId,
+      attachment: { ...attachment, r2: attachment.r2 && { ...attachment.r2 } }, lifecycle: 'retired', removedAt,
+      expiresAt: new Date(removedAt.getTime() + 30 * 24 * 60 * 60_000),
+    }
+    await this.metadata?.createRetiredAttachment(retired)
+    this.db.retiredAttachments.push(retired)
+    return retired
+  }
+
+  private async appendLifecycleAudit(session: ArchiveSession, recordKind: ArchiveRecordKind, recordId: string, action: ArchiveLifecycleAuditEntry['action'], details: Record<string, unknown> = {}) {
+    if (!this.metadata) return
+    const createdAt = this.now()
+    await this.metadata.appendLifecycleAudit({
+      id: `${createdAt.getTime()}-${String(++this.lifecycleAuditSequence).padStart(6, '0')}`,
+      actor: session.userId ?? `authority:${session.authority ?? 0}`, recordKind, recordId, action, details: JSON.stringify(details), createdAt,
+    })
+  }
+
+  listIssues(month?: string) { return this.db.issues.filter(item => item.lifecycle !== 'removed' && item.lifecycle !== 'purged' && (!month || item.month === month)).sort((a, b) => b.month.localeCompare(a.month) || b.title.localeCompare(a.title)) }
   searchIssues(query?: string) {
     const text = query?.trim().toLocaleLowerCase()
     return this.listIssues().filter(item => {
       if (!text) return true
-      const related = this.getPaperDetails(item.id)?.works.map(entry => `${entry.work.title} ${entry.work.author} ${entry.work.description ?? ''}`).join(' ') ?? ''
+      const related = this.db.appearances
+        .filter(appearance => appearance.paperId === item.id)
+        .map(appearance => this.getWork(appearance.workId))
+        .filter((work): work is Work => !!work)
+        .map(work => `${work.title} ${work.author} ${work.description ?? ''}`)
+        .join(' ')
       return `${item.month} ${item.issueNumber} ${item.title} ${item.description ?? ''} ${related}`.toLocaleLowerCase().includes(text)
     })
   }
-  getIssue(id: string) { return this.db.issues.find(item => item.id.localeCompare(id, undefined, { sensitivity: 'base' }) === 0 && item.lifecycle !== 'removed') }
-  getWork(id: string) { return this.db.works.find(item => item.id.localeCompare(id, undefined, { sensitivity: 'base' }) === 0 && item.lifecycle !== 'removed') }
+  getIssue(id: string) { return this.db.issues.find(item => item.id.localeCompare(id, undefined, { sensitivity: 'base' }) === 0 && item.lifecycle !== 'removed' && item.lifecycle !== 'purged') }
+  getWork(id: string) { return this.db.works.find(item => item.id.localeCompare(id, undefined, { sensitivity: 'base' }) === 0 && item.lifecycle !== 'removed' && item.lifecycle !== 'purged') }
   searchWorks(filters: { author?: string; text?: string } = {}) {
     const text = filters.text?.toLocaleLowerCase()
-    return this.db.works.filter(item => item.lifecycle !== 'removed' && (!filters.author || item.author.localeCompare(filters.author, undefined, { sensitivity: 'base' }) === 0) && (!text || `${item.title} ${item.author} ${item.description ?? ''}`.toLocaleLowerCase().includes(text))).sort((a, b) => a.author.localeCompare(b.author, undefined, { sensitivity: 'base' }) || a.title.localeCompare(b.title))
+    return this.db.works.filter(item => item.lifecycle !== 'removed' && item.lifecycle !== 'purged' && (!filters.author || item.author.localeCompare(filters.author, undefined, { sensitivity: 'base' }) === 0) && (!text || `${item.title} ${item.author} ${item.description ?? ''}`.toLocaleLowerCase().includes(text))).sort((a, b) => a.author.localeCompare(b.author, undefined, { sensitivity: 'base' }) || a.title.localeCompare(b.title))
   }
 
   async associateWork(session: ArchiveSession, paperId: string, input: AppearanceInput) {
@@ -735,10 +1013,12 @@ export class ArchiveService {
     if (!paper) return undefined
     const works = this.db.appearances
       .filter(item => item.paperId === paper.id)
-      .map(appearance => ({ appearance, work: this.getWork(appearance.workId) }))
+      .map(appearance => ({ appearance, work: this.db.works.find(item => item.id === appearance.workId) }))
       .filter((item): item is { appearance: PublicationAppearance; work: Work } => !!item.work)
       .sort((a, b) => a.appearance.displayOrder - b.appearance.displayOrder || a.work.id.localeCompare(b.work.id))
-      .map(({ appearance, work }) => ({ work, page: appearance.page, section: appearance.section, displayOrder: appearance.displayOrder }))
+      .map(({ appearance, work }) => work.lifecycle === 'removed' || work.lifecycle === 'purged'
+        ? ({ work: { id: work.id, title: work.title, author: work.author, lifecycle: work.lifecycle }, page: appearance.page, section: appearance.section, displayOrder: appearance.displayOrder, unavailable: true })
+        : ({ work, page: appearance.page, section: appearance.section, displayOrder: appearance.displayOrder }))
     return { paper, works }
   }
 
@@ -924,7 +1204,7 @@ export class ArchiveService {
     const common = {
       ...raw.record, id, attachment: { ...attachment, size: Number(attachment.size), r2: { ...attachment.r2, syncState: 'synced' as const } },
       publishedAt: new Date(raw.record.publishedAt), updatedAt: new Date(raw.record.updatedAt),
-      lifecycle: raw.record.lifecycle === 'removed' ? 'removed' as const : 'active' as const, backupState: 'complete' as const, backupError: undefined,
+      lifecycle: raw.record.lifecycle === 'purged' ? 'purged' as const : raw.record.lifecycle === 'removed' ? 'removed' as const : 'active' as const, backupState: 'complete' as const, backupError: undefined,
     }
     if (Number.isNaN(common.publishedAt.getTime()) || Number.isNaN(common.updatedAt.getTime())) throw new Error(`invalid dates in R2 manifest: ${key}`)
     const appearances = Array.isArray(raw.appearances) ? raw.appearances.map((value: any) => {
@@ -1057,9 +1337,10 @@ export class ArchiveConsoleFeatures {
     }, { authority: 4 })
     consoleService.addListener('memebot/archive/work/edit', async (id: string, patch: Partial<WorkInput>) => { await this.ready; return this.service.updateWork({ authority: 4 }, id, patch, 'Y') }, { authority: 4 })
     consoleService.addListener('memebot/archive/work/upload', async (id: string, input: AttachmentInput) => { await this.ready; return this.service.replaceWorkAttachment({ authority: 4 }, id, decodeConsoleAttachment(input)) }, { authority: 4 })
-    consoleService.addListener('memebot/archive/work/tree', async (id: string) => { await this.ready; const tree = await this.service.previews.tree(id); return tree.length ? tree : this.service.rebuildWorkPreview(id) })
-    consoleService.addListener('memebot/archive/work/preview', async (id: string, path: string) => { await this.ready; return this.service.previews.preview(id, path) })
-    consoleService.addListener('memebot/archive/work/file', async (id: string, path: string) => { await this.ready; const data = await this.service.previews.download(id, path); return { filename: path.split('/').pop(), data: Buffer.from(data).toString('base64') } })
+    const activeWork = (id: string) => { const work = this.service.getWork(id); if (!work) throw new Error('Work 不存在或已移除'); return work }
+    consoleService.addListener('memebot/archive/work/tree', async (id: string) => { await this.ready; activeWork(id); const tree = await this.service.previews.tree(id); return tree.length ? tree : this.service.rebuildWorkPreview(id) })
+    consoleService.addListener('memebot/archive/work/preview', async (id: string, path: string) => { await this.ready; activeWork(id); return this.service.previews.preview(id, path) })
+    consoleService.addListener('memebot/archive/work/file', async (id: string, path: string) => { await this.ready; activeWork(id); const data = await this.service.previews.download(id, path); return { filename: path.split('/').pop(), data: Buffer.from(data).toString('base64') } })
     consoleService.addListener('memebot/archive/work/download', async (id: string) => {
       await this.ready
       const work = this.service.getWork(id); if (!work?.attachment) throw new Error('Work 不存在或没有 ZIP')
@@ -1071,6 +1352,18 @@ export class ArchiveConsoleFeatures {
     consoleService.addListener('memebot/archive/restore/preview', async () => { await this.ready; return this.service.previewRestore({ authority: 4 }) }, { authority: 4 })
     consoleService.addListener('memebot/archive/restore/apply', async (selections?: RestoreSelection[]) => { await this.ready; return this.service.restoreFromR2({ authority: 4 }, selections) }, { authority: 4 })
     consoleService.addListener('memebot/archive/restore/history', async () => { await this.ready; return this.service.restoreHistory({ authority: 4 }) }, { authority: 4 })
+    consoleService.addListener('memebot/archive/removed', async () => { await this.ready; return this.service.listRemoved({ authority: 4 }) }, { authority: 4 })
+    consoleService.addListener('memebot/archive/record/remove', async (id: string, confirmation: string) => {
+      await this.ready
+      if (id.toUpperCase().startsWith('P')) return this.service.removeIssue({ authority: 4 }, id, confirmation)
+      return this.service.removeWork({ authority: 4 }, id, confirmation)
+    }, { authority: 4 })
+    consoleService.addListener('memebot/archive/record/restore', async (id: string) => { await this.ready; return this.service.restoreRecord({ authority: 4 }, id) }, { authority: 4 })
+    consoleService.addListener('memebot/archive/record/purge', async (id: string, confirmation: string) => { await this.ready; return this.service.purgeRecord({ authority: 4 }, id, confirmation) }, { authority: 4 })
+    consoleService.addListener('memebot/archive/record/anonymize', async (id: string, confirmation: string) => { await this.ready; return this.service.anonymizeRecord({ authority: 4 }, id, confirmation) }, { authority: 4 })
+    consoleService.addListener('memebot/archive/attachments/retired', async (recordId?: string) => { await this.ready; return this.service.listRetiredAttachments({ authority: 4 }, recordId) }, { authority: 4 })
+    consoleService.addListener('memebot/archive/attachment/restore', async (id: string) => { await this.ready; return this.service.restoreRetiredAttachment({ authority: 4 }, id) }, { authority: 4 })
+    consoleService.addListener('memebot/archive/lifecycle/history', async (recordId?: string) => { await this.ready; return this.service.lifecycleHistory({ authority: 4 }, recordId) }, { authority: 4 })
   }
 }
 
@@ -1093,11 +1386,14 @@ export function apply(ctx: Context, config: Config) {
     if (missing.length) throw new Error(`R2 已启用但配置不完整：${missing.join(', ')}`)
   }
   ctx.model.extend('archivePaper', {
-    id: 'string', issueNumber: 'string', month: 'string', title: 'string', description: 'text', sourceLink: 'string', attachment: 'text', lifecycle: 'string', backupState: 'string', backupError: 'text', publishedAt: 'timestamp', updatedAt: 'timestamp',
+    id: 'string', issueNumber: 'string', month: 'string', title: 'string', description: 'text', sourceLink: 'string', attachment: 'text', lifecycle: 'string', removedAt: 'timestamp', expiresAt: 'timestamp', purgedAt: 'timestamp', anonymizedAt: 'timestamp', backupState: 'string', backupError: 'text', publishedAt: 'timestamp', updatedAt: 'timestamp',
   }, { primary: 'id' })
-  ctx.model.extend('archiveWork', { id: 'string', title: 'string', author: 'string', description: 'text', attachment: 'text', lifecycle: 'string', backupState: 'string', backupError: 'text', publishedAt: 'timestamp', updatedAt: 'timestamp' }, { primary: 'id' })
+  ctx.model.extend('archiveWork', { id: 'string', title: 'string', author: 'string', description: 'text', attachment: 'text', lifecycle: 'string', removedAt: 'timestamp', expiresAt: 'timestamp', purgedAt: 'timestamp', anonymizedAt: 'timestamp', backupState: 'string', backupError: 'text', publishedAt: 'timestamp', updatedAt: 'timestamp' }, { primary: 'id' })
   ctx.model.extend('archiveSequence', { kind: 'string', value: 'unsigned' }, { primary: 'kind' })
   ctx.model.extend('archiveBackupJob', { id: 'string', recordKind: 'string', recordId: 'string', attachment: 'text', manifest: 'text', state: 'string', attempts: 'unsigned', nextAttemptAt: 'timestamp', error: 'text' }, { primary: 'id' })
+  ctx.model.extend('archiveCleanupJob', { id: 'string', recordKind: 'string', recordId: 'string', objectKeys: 'text', state: 'string', attempts: 'unsigned', nextAttemptAt: 'timestamp', error: 'text' }, { primary: 'id' })
+  ctx.model.extend('archiveRetiredAttachment', { id: 'string', recordKind: 'string', recordId: 'string', attachment: 'text', lifecycle: 'string', removedAt: 'timestamp', expiresAt: 'timestamp', restoredAt: 'timestamp', purgedAt: 'timestamp' }, { primary: 'id' })
+  ctx.model.extend('archiveLifecycleAudit', { id: 'string', actor: 'string', recordKind: 'string', recordId: 'string', action: 'string', details: 'text', createdAt: 'timestamp' }, { primary: 'id' })
   ctx.model.extend('archivePublicationAppearance', { paperId: 'string', workId: 'string', page: 'string', section: 'string', displayOrder: 'unsigned', createdAt: 'timestamp', updatedAt: 'timestamp' }, { primary: ['paperId', 'workId'] })
   ctx.model.extend('archiveRestoreAudit', { id: 'string', actor: 'string', action: 'string', result: 'string', details: 'text', createdAt: 'timestamp' }, { primary: 'id' })
   const metadata = new KoishiArchiveMetadataRepository(ctx)
@@ -1110,13 +1406,16 @@ export function apply(ctx: Context, config: Config) {
     if (item) { item.backupState = state; item.backupError = error }
   } }
   const queue = r2 ? new PersistentArchiveBackupQueue(ctx, local, r2, sink) : undefined
-  service = new ArchiveService({ config, metadata, local, r2, backupQueue: queue })
+  const cleanupQueue = r2 ? new PersistentArchiveCleanupQueue(ctx, r2) : undefined
+  service = new ArchiveService({ config, metadata, local, r2, backupQueue: queue, cleanupQueue })
   const preflight = new ArchivePreflight(config.localPath, r2, [config.r2.accessKeyId, config.r2.secretAccessKey])
   const initialized = service.initialize()
   const ready = Promise.all([initialized, preflight.check()]).then(([, health]) => { if (health.state === 'unavailable') throw new Error(health.stores.local.error || '本地存储不可用') })
   void ready.catch(() => undefined)
   new ArchiveConsoleFeatures(ctx, service, ready, preflight, queue).register()
   if (queue) ctx.setInterval(() => { void queue.runDue() }, 60_000)
+  if (cleanupQueue) ctx.setInterval(() => { void cleanupQueue.runDue() }, 60_000)
+  ctx.setInterval(() => { void service.purgeExpired() }, 60_000)
   ;(ctx as any).archive = service
   const root = ctx.command('archive [id:text]', '搜索或获取 Paper 归档')
   root.action(async ({ session }, id) => {
@@ -1150,6 +1449,21 @@ export function apply(ctx: Context, config: Config) {
       return items.length ? items.map(item => `${item.id} ${item.author} - ${item.title}`).join('\n') : '没有找到 Work。'
     }
     return '请使用 /archive search paper [查询] 或 /archive search works [查询]。'
+  })
+  root.subcommand('.rm <id:string>', '确认后将 Paper 或 Work 软删除 30 天').action(async ({ session }, id) => {
+    await ready
+    if (!session) return '无法识别当前会话。'
+    const archiveSession = commandSession(session)
+    service.requireAdmin(archiveSession)
+    const paper = service.getIssue(id)
+    const work = service.getWork(id)
+    if (!paper && !work) return 'Archive 记录不存在。'
+    const target = paper ? `${paper.id} ${paper.month} 第${paper.issueNumber}期 ${paper.title}` : `${work!.id} ${work!.author} - ${work!.title}`
+    await session.send(`即将移除 ${target}。普通搜索与附件将立即不可用，30 天内可恢复。请发送“确认”继续，其他输入取消。`)
+    if ((await session.prompt(300000))?.trim() !== '确认') return '已取消移除。'
+    if (paper) await service.removeIssue(archiveSession, paper.id, 'Y')
+    else await service.removeWork(archiveSession, work!.id, 'Y')
+    return `已移除 ${paper ? 'Paper' : 'Work'} ${id.toUpperCase()}，保留 30 天。`
   })
   const guidedPrompt = async (session: any, label: string, optional = false) => {
     await session.send(label + (optional ? '（发送 - 跳过）' : ''))

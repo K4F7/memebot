@@ -162,6 +162,68 @@ export class PersistentArchiveBackupQueue {
   }
 }
 
+interface CleanupJob {
+  id: string
+  recordKind: 'paper' | 'work'
+  recordId: string
+  objectKeys: string
+  state: 'pending' | 'failed' | 'complete'
+  attempts: number
+  nextAttemptAt: Date
+  error: string
+}
+
+export class PersistentArchiveCleanupQueue {
+  private running?: Promise<void>
+  constructor(
+    private readonly ctx: QueueContext,
+    private readonly r2: ExtensionR2Store,
+    private readonly now: () => Date = () => new Date(),
+  ) {}
+  async enqueue(recordKind: 'paper' | 'work', recordId: string, objectKeys: string[]) {
+    const keys = [...new Set(objectKeys.filter(Boolean))].sort()
+    const id = createHash('sha256').update(`${recordKind}\0${recordId}\0${keys.join('\0')}`).digest('hex')
+    const existing = await this.ctx.model.get('archiveCleanupJob', { id })
+    const data = { recordKind, recordId, objectKeys: JSON.stringify(keys), state: 'pending', attempts: 0, nextAttemptAt: this.now(), error: '' }
+    if (existing[0]) await this.ctx.model.set('archiveCleanupJob', { id }, data)
+    else await this.ctx.model.create('archiveCleanupJob', { id, ...data })
+  }
+  async runDue() {
+    if (this.running) return this.running
+    this.running = (async () => {
+      const jobs = await this.ctx.model.get('archiveCleanupJob', {}) as CleanupJob[]
+      for (const job of jobs) if (job.state !== 'complete' && new Date(job.nextAttemptAt).getTime() <= this.now().getTime()) await this.run(job)
+    })()
+    try { await this.running } finally { this.running = undefined }
+  }
+  async retryNow(recordId?: string) {
+    const jobs = await this.ctx.model.get('archiveCleanupJob', recordId ? { recordId } : {}) as CleanupJob[]
+    for (const job of jobs) if (job.state !== 'complete') {
+      const pending = { ...job, state: 'pending' as const, nextAttemptAt: this.now() }
+      await this.ctx.model.set('archiveCleanupJob', { id: job.id }, { state: pending.state, nextAttemptAt: pending.nextAttemptAt })
+      await this.run(pending)
+    }
+  }
+  async counts() {
+    const jobs = await this.ctx.model.get('archiveCleanupJob', {}) as CleanupJob[]
+    return {
+      pending: jobs.filter(job => job.state === 'pending').length,
+      failed: jobs.filter(job => job.state === 'failed').length,
+      complete: jobs.filter(job => job.state === 'complete').length,
+    }
+  }
+  private async run(job: CleanupJob) {
+    try {
+      for (const key of JSON.parse(job.objectKeys) as string[]) await this.r2.delete(key)
+      await this.ctx.model.set('archiveCleanupJob', { id: job.id }, { state: 'complete', error: '' })
+    } catch (error) {
+      const attempts = job.attempts + 1
+      const message = error instanceof Error ? error.message : String(error)
+      await this.ctx.model.set('archiveCleanupJob', { id: job.id }, { state: 'failed', attempts, nextAttemptAt: new Date(this.now().getTime() + backupDelay(attempts)), error: message })
+    }
+  }
+}
+
 interface ZipEntry {
   path: string
   method: number
@@ -206,6 +268,7 @@ export class WorkPreviewStore {
     return { previewable: true, kind: classification.kind, contentType: classification.contentType, data: Buffer.from(data).toString('base64'), ...(classification.sandbox && { sandbox: 'allow-downloads' }) }
   }
   async download(id: string, path: string) { return new Uint8Array(await readFile(confined(this.workRoot(id), path))) }
+  async remove(id: string) { await rm(this.workRoot(id), { recursive: true, force: true }) }
   private workRoot(id: string) {
     if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error('Work 编号不安全')
     return resolve(this.root, id)
