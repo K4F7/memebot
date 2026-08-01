@@ -188,4 +188,29 @@ describe('standalone plugin command smoke behaviors', () => {
     const stranger = await harness.client({ userId: '10008', channelId: '20001' })
     await expect(stranger.receive('intake 反馈#1')).resolves.toEqual(['记录不存在或无权查看。'])
   })
+
+  it('authorizes quoted Intake claims and exact work-state actions through persisted message IDs', async () => {
+    const harness = await createKoishiTestHarness(intake, {
+      targets: { feedback: { users: [{ qq: '30001' }], groups: [] } },
+      administrators: [{ qq: '10001' }, { qq: '10002' }], managementGroups: [],
+    })
+    harnesses.push(harness)
+    await harness.registerBroadcastTargets(['qq:30001', 'qq:10006'])
+    const member = await harness.client({ userId: '10006', channelId: '20001' })
+    await member.receive('feedback'); await member.receive('需要处理'); await member.receive('提交')
+    const mappings = await harness.app.database.get('intakeMessageMap', {})
+    const messageId = mappings[0].messageId
+
+    const stranger = await harness.client({ userId: '10003', channelId: '20001' })
+    await expect(stranger.receive(qqQuotedCommand(messageId, '管理通知', '认领'))).resolves.toEqual(['没有权限。'])
+    const first = await harness.client({ userId: '10001', channelId: '20001' })
+    await expect(first.receive(qqQuotedCommand(messageId, '管理通知', '认领'))).resolves.toEqual(['已认领 反馈#1。'])
+    const second = await harness.client({ userId: '10002', channelId: '20001' })
+    await expect(second.receive(qqQuotedCommand(messageId, '管理通知', '认领'))).resolves.toEqual(['反馈#1 已由 10001 认领。'])
+    await expect(first.receive(qqQuotedCommand(messageId, '管理通知', '转交 10002'))).resolves.toEqual([expect.stringContaining('认领人 QQ: 10002')])
+    await expect(first.receive(qqQuotedCommand(messageId, '管理通知', '取消认领'))).resolves.toEqual([expect.not.stringContaining('认领人 QQ:')])
+    await expect(first.receive(qqQuotedCommand(messageId, '管理通知', '已解决'))).resolves.toEqual([expect.stringContaining('resolved')])
+    await expect(first.receive(qqQuotedCommand(messageId, '管理通知', '关闭'))).resolves.toEqual([expect.stringContaining('（已关闭）')])
+    await expect(first.receive(qqQuotedCommand(messageId, '管理通知', '打开'))).resolves.toEqual([expect.not.stringContaining('（已关闭）')])
+  })
 })
