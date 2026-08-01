@@ -17,3 +17,4 @@ jobs:
       - run: yarn install --immutable
       - run: yarn typecheck
       - run: yarn build
+      - run: yarn check:plugin-loads

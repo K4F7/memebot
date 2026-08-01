@@ -7,6 +7,7 @@
   ],
   "scripts": {
     "build": "yarn workspaces foreach --all --topological-dev run build",
+    "check:plugin-loads": "node scripts/check-plugin-loads.cjs",
     "typecheck": "yarn workspaces foreach --all --topological-dev run typecheck"
   },
   "devDependencies": {
