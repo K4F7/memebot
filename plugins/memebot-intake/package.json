@@ -1,6 +1,6 @@
 {
   "name": "koishi-plugin-memebot-intake",
-  "version": "0.1.0",
+  "version": "0.1.1-alpha.1",
   "description": "自用，统一受理投稿、反馈工单与建议",
   "license": "MIT",
   "main": "lib/index.js",
