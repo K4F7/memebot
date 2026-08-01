@@ -172,8 +172,16 @@ describe('standalone plugin command smoke behaviors', () => {
         content: expect.stringContaining('[反馈#1] feedback pending'),
       },
       {
+        targets: ['qq:30001'],
+        content: expect.stringContaining('<message forward>'),
+      },
+      {
         targets: ['qq:40001'],
         content: expect.stringContaining('[反馈#1] feedback pending'),
+      },
+      {
+        targets: ['qq:40001'],
+        content: expect.stringContaining('<message forward>'),
       },
     ])
     await expect(client.receive('intake 反馈#1')).resolves.toEqual([expect.stringContaining('[反馈#1]')])

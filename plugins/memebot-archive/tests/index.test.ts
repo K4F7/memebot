@@ -6,10 +6,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 vi.mock('koishi', () => {
   const chain = () => {
     const value: Record<string, unknown> = {}
-    for (const method of ['default', 'description', 'min', 'max']) value[method] = () => value
+    for (const method of ['default', 'description', 'min', 'max', 'role']) value[method] = () => value
     return value
   }
-  return { Context: class {}, Schema: { object: chain, array: chain, number: chain, string: chain } }
+  return { Context: class {}, Schema: { object: chain, array: chain, number: chain, string: chain, boolean: chain } }
 })
 
 import { ArchiveConsoleFeatures, ArchiveService, KoishiArchiveMetadataRepository, MemoryR2Store } from '../src/index'

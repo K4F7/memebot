@@ -2,6 +2,10 @@ import { createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 import { Context, h, Schema } from 'koishi'
+import { ArchivePreflight, BackupContext, BackupStatusSink, PersistentArchiveBackupQueue, WorkPreviewStore } from './extensions'
+import { S3R2Store } from './s3'
+
+export { ArchivePreflight, PersistentArchiveBackupQueue, WorkPreviewStore } from './extensions'
 
 export const name = 'memebot-archive'
 export const inject = ['database', 'console']
@@ -11,6 +15,15 @@ export interface Config {
   managementGroups: Array<{ qq: string }>
   localPath: string
   paperMaxMb: number
+  workMaxMb: number
+  r2: {
+    enabled: boolean
+    accountId: string
+    bucketName: string
+    accessKeyId: string
+    secretAccessKey: string
+    objectPrefix: string
+  }
 }
 
 const qqTable = () => Schema.array(Schema.object({ qq: Schema.string().description('QQ 号') }))
@@ -20,6 +33,15 @@ export const Config: Schema<Config> = Schema.object({
   managementGroups: qqTable().default([]).description('允许执行管理动作的 QQ 群'),
   localPath: Schema.string().default('data/memebot-archive').description('附件本地存储目录'),
   paperMaxMb: Schema.number().default(100).min(1).description('Paper PDF 最大大小（MB）'),
+  workMaxMb: Schema.number().default(500).min(1).description('Work ZIP 最大大小（MB）'),
+  r2: Schema.object({
+    enabled: Schema.boolean().default(false),
+    accountId: Schema.string().default(''),
+    bucketName: Schema.string().default(''),
+    accessKeyId: Schema.string().default(''),
+    secretAccessKey: Schema.string().role('secret').default(''),
+    objectPrefix: Schema.string().default('memebot-archive'),
+  }).default({ enabled: false, accountId: '', bucketName: '', accessKeyId: '', secretAccessKey: '', objectPrefix: 'memebot-archive' }),
 })
 
 export interface Attachment {
@@ -41,17 +63,21 @@ export interface NewspaperIssue {
   publishedAt: Date
   updatedAt?: Date
   lifecycle?: 'active' | 'removed'
+  backupState?: 'disabled' | 'pending' | 'failed' | 'complete'
+  backupError?: string
 }
 
 export interface Work {
   id: string
   title: string
   author: string
-  month: string
   description?: string
-  link?: string
   attachment?: Attachment
   publishedAt: Date
+  updatedAt?: Date
+  lifecycle?: 'active' | 'removed'
+  backupState?: 'disabled' | 'pending' | 'failed' | 'complete'
+  backupError?: string
 }
 
 export interface ArchiveDatabase {
@@ -70,10 +96,35 @@ declare module 'koishi' {
       sourceLink: string
       attachment: string
       lifecycle: 'active' | 'removed'
+      backupState: 'disabled' | 'pending' | 'failed' | 'complete'
+      backupError: string
       publishedAt: Date
       updatedAt: Date
     }
     archiveSequence: { kind: string; value: number }
+    archiveWork: {
+      id: string
+      title: string
+      author: string
+      description: string
+      attachment: string
+      lifecycle: 'active' | 'removed'
+      backupState: 'disabled' | 'pending' | 'failed' | 'complete'
+      backupError: string
+      publishedAt: Date
+      updatedAt: Date
+    }
+    archiveBackupJob: {
+      id: string
+      recordKind: 'paper' | 'work'
+      recordId: string
+      attachment: string
+      manifest: string
+      state: 'pending' | 'failed' | 'complete'
+      attempts: number
+      nextAttemptAt: Date
+      error: string
+    }
   }
 }
 
@@ -82,6 +133,11 @@ export interface ArchiveMetadataRepository {
   nextPaperId(): Promise<string>
   createPaper(paper: NewspaperIssue): Promise<void>
   updatePaper(paper: NewspaperIssue): Promise<void>
+  loadWorks(): Promise<Work[]>
+  nextWorkId(): Promise<string>
+  createWork(work: Work): Promise<void>
+  updateWork(work: Work): Promise<void>
+  updateBackupState(kind: 'paper' | 'work', id: string, state: 'pending' | 'failed' | 'complete', error?: string): Promise<void>
 }
 
 export class KoishiArchiveMetadataRepository implements ArchiveMetadataRepository {
@@ -93,6 +149,7 @@ export class KoishiArchiveMetadataRepository implements ArchiveMetadataRepositor
       description: String(row.description || '') || undefined, sourceLink: String(row.sourceLink || '') || undefined,
       attachment: row.attachment ? JSON.parse(String(row.attachment)) : undefined,
       lifecycle: (row.lifecycle || 'active') as 'active' | 'removed',
+      backupState: (row.backupState || 'disabled') as NewspaperIssue['backupState'], backupError: String(row.backupError || '') || undefined,
       publishedAt: new Date(row.publishedAt as string | number), updatedAt: new Date(row.updatedAt as string | number),
     }))
   }
@@ -108,25 +165,61 @@ export class KoishiArchiveMetadataRepository implements ArchiveMetadataRepositor
     await this.ctx.model.create('archivePaper', {
       id: paper.id, issueNumber: paper.issueNumber, month: paper.month, title: paper.title,
       description: paper.description ?? '', sourceLink: paper.sourceLink ?? '', attachment: JSON.stringify(paper.attachment),
-      lifecycle: paper.lifecycle ?? 'active', publishedAt: paper.publishedAt, updatedAt: now,
+      lifecycle: paper.lifecycle ?? 'active', backupState: paper.backupState ?? 'disabled', backupError: paper.backupError ?? '', publishedAt: paper.publishedAt, updatedAt: now,
     })
   }
   async updatePaper(paper: NewspaperIssue) {
     await this.ctx.model.set('archivePaper', { id: paper.id }, {
       issueNumber: paper.issueNumber, month: paper.month, title: paper.title,
       description: paper.description ?? '', sourceLink: paper.sourceLink ?? '', attachment: JSON.stringify(paper.attachment),
-      lifecycle: paper.lifecycle ?? 'active', updatedAt: paper.updatedAt ?? new Date(),
+      lifecycle: paper.lifecycle ?? 'active', backupState: paper.backupState ?? 'disabled', backupError: paper.backupError ?? '', updatedAt: paper.updatedAt ?? new Date(),
     })
+  }
+  async loadWorks() {
+    const rows = await this.ctx.model.get('archiveWork', {}) as unknown as Array<Record<string, unknown>>
+    return rows.map(row => ({
+      id: String(row.id), title: String(row.title), author: String(row.author), description: String(row.description || '') || undefined,
+      attachment: row.attachment ? JSON.parse(String(row.attachment)) : undefined, lifecycle: (row.lifecycle || 'active') as 'active' | 'removed',
+      backupState: (row.backupState || 'disabled') as Work['backupState'], backupError: String(row.backupError || '') || undefined,
+      publishedAt: new Date(row.publishedAt as string | number), updatedAt: new Date(row.updatedAt as string | number),
+    }))
+  }
+  async nextWorkId() {
+    const rows = await this.ctx.model.get('archiveSequence', { kind: 'work' }) as unknown as Array<{ value: number }>
+    const value = (rows[0]?.value ?? 0) + 1
+    if (rows[0]) await this.ctx.model.set('archiveSequence', { kind: 'work' }, { value })
+    else await this.ctx.model.create('archiveSequence', { kind: 'work', value })
+    return `W${value}`
+  }
+  async createWork(work: Work) {
+    await this.ctx.model.create('archiveWork', {
+      id: work.id, title: work.title, author: work.author, description: work.description ?? '', attachment: JSON.stringify(work.attachment), lifecycle: work.lifecycle ?? 'active',
+      backupState: work.backupState ?? 'disabled', backupError: work.backupError ?? '', publishedAt: work.publishedAt, updatedAt: work.updatedAt ?? work.publishedAt,
+    })
+  }
+  async updateWork(work: Work) {
+    await this.ctx.model.set('archiveWork', { id: work.id }, {
+      title: work.title, author: work.author, description: work.description ?? '', attachment: JSON.stringify(work.attachment), lifecycle: work.lifecycle ?? 'active',
+      backupState: work.backupState ?? 'disabled', backupError: work.backupError ?? '', updatedAt: work.updatedAt ?? new Date(),
+    })
+  }
+  async updateBackupState(kind: 'paper' | 'work', id: string, state: 'pending' | 'failed' | 'complete', error?: string) {
+    const table = kind === 'paper' ? 'archivePaper' : 'archiveWork'
+    await this.ctx.model.set(table, { id }, { backupState: state, backupError: error ?? '', updatedAt: new Date() } as any)
   }
 }
 
 export interface R2Store {
   put(key: string, data: Uint8Array, contentType?: string): Promise<void>
   get(key: string): Promise<Uint8Array | undefined>
+  delete(key: string): Promise<void>
 }
 
 export interface ArchiveBackupQueue {
-  enqueue(attachment: Attachment): Promise<void>
+  enqueue(attachment: Attachment, context?: BackupContext): Promise<void>
+  runDue?(): Promise<void>
+  retryNow?(recordId?: string): Promise<void>
+  counts?(): Promise<{ pending: number; failed: number; complete: number }>
 }
 
 export interface MessageSender {
@@ -161,9 +254,7 @@ export interface IssueInput {
 export interface WorkInput {
   title: string
   author: string
-  month: string
   description?: string
-  link?: string
   attachment?: AttachmentInput
 }
 
@@ -189,14 +280,31 @@ function validatePdfAttachment(input: AttachmentInput, maxMb: number) {
   return data
 }
 
+function validateWorkMetadata(input: Pick<WorkInput, 'title' | 'author' | 'description'>) {
+  const title = input.title?.trim()
+  const author = input.author?.trim()
+  if (!title) throw new Error('Work 标题不能为空')
+  if (!author) throw new Error('Work 作者不能为空')
+  return { title, author, description: input.description?.trim() || undefined }
+}
+
+function workBytes(input: AttachmentInput, maxMb: number) {
+  const type = input.contentType?.toLowerCase()
+  if ((type && !['application/zip', 'application/x-zip-compressed', 'application/octet-stream'].includes(type)) || !input.filename.toLowerCase().endsWith('.zip')) throw new Error('Work Package 必须是 ZIP')
+  const data = typeof input.data === 'string' ? new TextEncoder().encode(input.data) : input.data
+  if (data.byteLength > maxMb * 1024 * 1024) throw new Error(`Work ZIP 大小超过 ${maxMb} MB 限制`)
+  return data
+}
+
 export class MemoryR2Store implements R2Store {
   readonly objects = new Map<string, Uint8Array>()
   async put(key: string, data: Uint8Array) { this.objects.set(key, data) }
   async get(key: string) { return this.objects.get(key) }
+  async delete(key: string) { this.objects.delete(key) }
 }
 
 export class LocalAttachmentStore {
-  constructor(readonly root: string, readonly r2?: R2Store) {}
+  constructor(readonly root: string, readonly r2?: R2Store, readonly objectPrefix = 'memebot-archive') {}
 
   async save(id: string, input: AttachmentInput): Promise<Attachment> {
     const data = typeof input.data === 'string' ? new TextEncoder().encode(input.data) : input.data
@@ -208,7 +316,7 @@ export class LocalAttachmentStore {
     const checksum = createHash('sha256').update(data).digest('hex')
     const attachment: Attachment = {
       relativePath, contentType: input.contentType ?? 'application/octet-stream', size: data.byteLength, checksum,
-      r2: this.r2 ? { objectKey: `memebot-archive/${relativePath}`, syncState: 'pending' } : undefined,
+      r2: this.r2 ? { objectKey: `${this.objectPrefix.replace(/^\/+|\/+$/g, '')}/${relativePath}`, syncState: 'pending' } : undefined,
     }
     return attachment
   }
@@ -259,19 +367,29 @@ export class ArchiveService {
   private workSequence = 0
   private readonly metadata?: ArchiveMetadataRepository
   private readonly backupQueue?: ArchiveBackupQueue
+  readonly previews: WorkPreviewStore
   readonly fallbackEvents: Array<{ id: string; kind: 'issue' | 'work'; reason: string }> = []
 
-  constructor(options: { config?: Partial<Config>; db?: Partial<ArchiveDatabase>; local?: LocalAttachmentStore; r2?: R2Store; metadata?: ArchiveMetadataRepository; backupQueue?: ArchiveBackupQueue }) {
-    this.config = { administrators: [], managementGroups: [], localPath: 'data/memebot-archive', paperMaxMb: 100, ...options.config }
+  constructor(options: { config?: Partial<Config>; db?: Partial<ArchiveDatabase>; local?: LocalAttachmentStore; r2?: R2Store; metadata?: ArchiveMetadataRepository; backupQueue?: ArchiveBackupQueue; previews?: WorkPreviewStore }) {
+    this.config = {
+      administrators: [], managementGroups: [], localPath: 'data/memebot-archive', paperMaxMb: 100, workMaxMb: 500,
+      r2: { enabled: false, accountId: '', bucketName: '', accessKeyId: '', secretAccessKey: '', objectPrefix: 'memebot-archive' },
+      ...options.config,
+    }
     this.db = { issues: options.db?.issues ?? [], works: options.db?.works ?? [] }
-    this.local = options.local ?? new LocalAttachmentStore(this.config.localPath, options.r2)
+    this.local = options.local ?? new LocalAttachmentStore(this.config.localPath, options.r2, this.config.r2.objectPrefix)
+    this.previews = options.previews ?? new WorkPreviewStore(join(this.config.localPath, '.previews'))
     this.metadata = options.metadata
     this.backupQueue = options.backupQueue ?? (options.r2 ? new ImmediateArchiveBackupQueue(this.local) : undefined)
   }
 
   async initialize() {
     if (!this.metadata) return
-    this.db.issues.splice(0, this.db.issues.length, ...await this.metadata.loadPapers())
+    const [papers, works] = await Promise.all([this.metadata.loadPapers(), this.metadata.loadWorks()])
+    const addedPapers = this.db.issues.filter(item => !papers.some(paper => paper.id === item.id))
+    const addedWorks = this.db.works.filter(item => !works.some(work => work.id === item.id))
+    this.db.issues.splice(0, this.db.issues.length, ...papers, ...addedPapers)
+    this.db.works.splice(0, this.db.works.length, ...works, ...addedWorks)
   }
 
   isAdmin(session: ArchiveSession): boolean {
@@ -291,21 +409,32 @@ export class ArchiveService {
     validatePdfAttachment(input.attachment, this.config.paperMaxMb)
     const id = this.metadata ? await this.metadata.nextPaperId() : this.id('P')
     const attachmentInput = input.attachment
-    const issue: NewspaperIssue = { id, ...validated, publishedAt: new Date(), updatedAt: new Date(), lifecycle: 'active' }
+    const issue: NewspaperIssue = { id, ...validated, publishedAt: new Date(), updatedAt: new Date(), lifecycle: 'active', backupState: this.backupQueue ? 'pending' : 'disabled' }
     if (attachmentInput) issue.attachment = await this.local.save(id, attachmentInput)
-    if (issue.attachment && this.backupQueue) await this.backupQueue.enqueue(issue.attachment)
     if (this.metadata) await this.metadata.createPaper(issue)
     this.db.issues.push(issue)
+    if (issue.attachment && this.backupQueue) {
+      await this.backupQueue.enqueue(issue.attachment, { recordKind: 'paper', recordId: issue.id, manifest: this.manifest(issue) })
+      if (this.backupQueue.runDue) void this.backupQueue.runDue()
+    }
     return issue
   }
 
   async publishWork(session: ArchiveSession, input: WorkInput): Promise<Work> {
     this.requireAdmin(session)
-    const id = this.id('W')
-    const { attachment: attachmentInput, ...metadata } = input
-    const work: Work = { id, ...metadata, publishedAt: new Date() }
-    if (attachmentInput) work.attachment = await this.local.save(id, attachmentInput)
+    const validated = validateWorkMetadata(input)
+    if (!input.attachment) throw new Error('Work Package ZIP attachment required')
+    const data = workBytes(input.attachment, this.config.workMaxMb)
+    const id = this.metadata ? await this.metadata.nextWorkId() : this.id('W')
+    await this.previews.build(id, data)
+    const work: Work = { id, ...validated, publishedAt: new Date(), updatedAt: new Date(), lifecycle: 'active', backupState: this.backupQueue ? 'pending' : 'disabled' }
+    work.attachment = await this.local.save(id, { ...input.attachment, data })
+    if (this.metadata) await this.metadata.createWork(work)
     this.db.works.push(work)
+    if (this.backupQueue) {
+      await this.backupQueue.enqueue(work.attachment, { recordKind: 'work', recordId: work.id, manifest: this.manifest(work) })
+      if (this.backupQueue.runDue) void this.backupQueue.runDue()
+    }
     return work
   }
 
@@ -329,11 +458,25 @@ export class ArchiveService {
     if (this.metadata) await this.metadata.updatePaper(issue)
     return issue
   }
-  updateWork(session: ArchiveSession, id: string, patch: Partial<Omit<WorkInput, 'attachment'>>, confirmation?: string) {
+  async updateWork(session: ArchiveSession, id: string, patch: Partial<Omit<WorkInput, 'attachment'>>, confirmation?: string) {
     this.requireConfirmation(session, confirmation)
     const work = this.db.works.find(item => item.id === id)
     if (!work) throw new Error('Work not found')
-    Object.assign(work, patch)
+    Object.assign(work, validateWorkMetadata({ ...work, ...patch }))
+    work.updatedAt = new Date()
+    if (this.metadata) await this.metadata.updateWork(work)
+    return work
+  }
+  async replaceWorkAttachment(session: ArchiveSession, id: string, attachmentInput: AttachmentInput) {
+    this.requireAdmin(session)
+    const work = this.getWork(id)
+    if (!work) throw new Error('Work not found')
+    const data = workBytes(attachmentInput, this.config.workMaxMb)
+    await this.previews.build(work.id, data)
+    work.attachment = await this.local.save(work.id, { ...attachmentInput, data })
+    work.updatedAt = new Date(); work.backupState = this.backupQueue ? 'pending' : 'disabled'; delete work.backupError
+    if (this.metadata) await this.metadata.updateWork(work)
+    if (this.backupQueue) { await this.backupQueue.enqueue(work.attachment, { recordKind: 'work', recordId: work.id, manifest: this.manifest(work) }); if (this.backupQueue.runDue) void this.backupQueue.runDue() }
     return work
   }
   async removeIssue(session: ArchiveSession, id: string, confirmation?: string) {
@@ -344,7 +487,7 @@ export class ArchiveService {
     if (this.metadata) await this.metadata.updatePaper(issue)
     return issue
   }
-  removeWork(session: ArchiveSession, id: string, confirmation?: string) { this.requireConfirmation(session, confirmation); return this.remove(this.db.works, id, 'Work') }
+  async removeWork(session: ArchiveSession, id: string, confirmation?: string) { this.requireConfirmation(session, confirmation); const work = this.getWork(id); if (!work) throw new Error('Work not found'); work.lifecycle = 'removed'; work.updatedAt = new Date(); if (this.metadata) await this.metadata.updateWork(work); return work }
 
   listIssues(month?: string) { return this.db.issues.filter(item => item.lifecycle !== 'removed' && (!month || item.month === month)).sort((a, b) => b.month.localeCompare(a.month) || b.title.localeCompare(a.title)) }
   searchIssues(query?: string) {
@@ -352,18 +495,24 @@ export class ArchiveService {
     return this.listIssues().filter(item => !text || `${item.month} ${item.issueNumber} ${item.title} ${item.description ?? ''}`.toLocaleLowerCase().includes(text))
   }
   getIssue(id: string) { return this.db.issues.find(item => item.id.localeCompare(id, undefined, { sensitivity: 'base' }) === 0 && item.lifecycle !== 'removed') }
-  getWork(id: string) { return this.db.works.find(item => item.id === id) }
-  searchWorks(filters: { month?: string; author?: string; text?: string } = {}) {
+  getWork(id: string) { return this.db.works.find(item => item.id.localeCompare(id, undefined, { sensitivity: 'base' }) === 0 && item.lifecycle !== 'removed') }
+  searchWorks(filters: { author?: string; text?: string } = {}) {
     const text = filters.text?.toLocaleLowerCase()
-    return this.db.works.filter(item => (!filters.month || item.month === filters.month) && (!filters.author || item.author.localeCompare(filters.author, undefined, { sensitivity: 'base' }) === 0) && (!text || `${item.title} ${item.author} ${item.description ?? ''}`.toLocaleLowerCase().includes(text))).sort((a, b) => a.author.localeCompare(b.author, undefined, { sensitivity: 'base' }) || a.title.localeCompare(b.title))
+    return this.db.works.filter(item => item.lifecycle !== 'removed' && (!filters.author || item.author.localeCompare(filters.author, undefined, { sensitivity: 'base' }) === 0) && (!text || `${item.title} ${item.author} ${item.description ?? ''}`.toLocaleLowerCase().includes(text))).sort((a, b) => a.author.localeCompare(b.author, undefined, { sensitivity: 'base' }) || a.title.localeCompare(b.title))
   }
 
   async retryPending() {
+    if (this.backupQueue?.retryNow) { await this.backupQueue.retryNow(); return }
     for (const item of [...this.db.issues, ...this.db.works]) {
       if (item.attachment?.r2 && item.attachment.r2.syncState !== 'synced') await (this.backupQueue?.enqueue(item.attachment) ?? this.local.sync(item.attachment))
     }
   }
   async recover(item: NewspaperIssue | Work) { return item.attachment ? this.local.read(item.attachment) : undefined }
+  async rebuildWorkPreview(id: string) {
+    const work = this.getWork(id)
+    if (!work?.attachment) throw new Error('Work 不存在或没有 ZIP')
+    return this.previews.build(work.id, await this.local.read(work.attachment))
+  }
 
   async sendIssue(session: ArchiveSession, id: string, sender: MessageSender) { return this.send(session, this.getIssue(id), sender, 'issue') }
   async sendWork(session: ArchiveSession, id: string, sender: MessageSender) { return this.send(session, this.getWork(id), sender, 'work') }
@@ -376,6 +525,10 @@ export class ArchiveService {
   requireAdmin(session: ArchiveSession) { if (!this.isAdmin(session)) throw new Error('archive administrator permission required') }
   private requireConfirmation(session: ArchiveSession, confirmation?: string) { this.requireAdmin(session); if (confirmation !== 'Y') throw new Error('confirmation requires exact Y') }
   private remove<T extends { id: string }>(items: T[], id: string, label: string) { const index = items.findIndex(item => item.id === id); if (index < 0) throw new Error(`${label} not found`); return items.splice(index, 1)[0] }
+  private manifest(item: NewspaperIssue | Work) {
+    const { attachment, ...metadata } = item
+    return { ...metadata, attachment: attachment && { relativePath: attachment.relativePath, contentType: attachment.contentType, size: attachment.size, checksum: attachment.checksum } }
+  }
 }
 
 function commandSession(session: any): ArchiveSession {
@@ -401,14 +554,24 @@ function decodeConsoleAttachment(input: AttachmentInput): AttachmentInput {
 }
 
 export class ArchiveConsoleFeatures {
-  constructor(private readonly ctx: Context, private readonly service: ArchiveService, private readonly ready: Promise<void>) {}
+  constructor(
+    private readonly ctx: Context,
+    private readonly service: ArchiveService,
+    private readonly ready: Promise<void>,
+    private readonly preflight?: ArchivePreflight,
+    private readonly queue?: ArchiveBackupQueue,
+  ) {}
   register() {
     const consoleService = (this.ctx as any).console
     if (!consoleService?.addListener) return
     consoleService.addEntry?.({ dev: resolve(__dirname, '../client/index.ts'), prod: resolve(__dirname, '../dist') })
     consoleService.addListener('memebot/archive/status', async () => {
-      try { await this.ready; return { state: 'ready' } } catch (error) { return { state: 'unavailable', error: error instanceof Error ? error.message : String(error) } }
+      const health = this.preflight ? await this.preflight.check() : { state: 'ready' as const, lastCheck: new Date().toISOString(), stores: { local: { ok: true }, r2: { enabled: false } } }
+      const queue = this.queue?.counts ? await this.queue.counts() : { pending: 0, failed: 0, complete: 0 }
+      try { await this.ready; return { ...health, queue } } catch (error) { return { ...health, state: 'unavailable', error: error instanceof Error ? error.message : String(error), queue } }
     })
+    consoleService.addListener('memebot/archive/recheck', async () => this.preflight?.check(), { authority: 4 })
+    consoleService.addListener('memebot/archive/backup/retry', async (recordId?: string) => { await this.queue?.retryNow?.(recordId); return this.queue?.counts?.() }, { authority: 4 })
     consoleService.addListener('memebot/archive/papers', async (query?: string) => { await this.ready; return this.service.searchIssues(query) })
     consoleService.addListener('memebot/archive/paper/create', async (input: IssueInput) => {
       await this.ready
@@ -428,22 +591,78 @@ export class ArchiveConsoleFeatures {
     }
     consoleService.addListener('memebot/archive/paper/preview', attachment)
     consoleService.addListener('memebot/archive/paper/download', attachment)
+    consoleService.addListener('memebot/archive/works', async (query?: string) => { await this.ready; return this.service.searchWorks({ text: query }) })
+    consoleService.addListener('memebot/archive/work/create', async (input: WorkInput) => {
+      await this.ready
+      return this.service.publishWork({ authority: 4 }, { ...input, attachment: input.attachment && decodeConsoleAttachment(input.attachment) })
+    }, { authority: 4 })
+    consoleService.addListener('memebot/archive/work/edit', async (id: string, patch: Partial<WorkInput>) => { await this.ready; return this.service.updateWork({ authority: 4 }, id, patch, 'Y') }, { authority: 4 })
+    consoleService.addListener('memebot/archive/work/upload', async (id: string, input: AttachmentInput) => { await this.ready; return this.service.replaceWorkAttachment({ authority: 4 }, id, decodeConsoleAttachment(input)) }, { authority: 4 })
+    consoleService.addListener('memebot/archive/work/tree', async (id: string) => { await this.ready; const tree = await this.service.previews.tree(id); return tree.length ? tree : this.service.rebuildWorkPreview(id) })
+    consoleService.addListener('memebot/archive/work/preview', async (id: string, path: string) => { await this.ready; return this.service.previews.preview(id, path) })
+    consoleService.addListener('memebot/archive/work/file', async (id: string, path: string) => { await this.ready; const data = await this.service.previews.download(id, path); return { filename: path.split('/').pop(), data: Buffer.from(data).toString('base64') } })
+    consoleService.addListener('memebot/archive/work/download', async (id: string) => {
+      await this.ready
+      const work = this.service.getWork(id); if (!work?.attachment) throw new Error('Work 不存在或没有 ZIP')
+      const data = await this.service.recover(work)
+      return { filename: work.attachment.relativePath.split('/').pop(), contentType: work.attachment.contentType, data: Buffer.from(data!).toString('base64') }
+    })
   }
 }
 
 export function apply(ctx: Context, config: Config) {
+  const suppliedR2 = config?.r2
+  config = {
+    administrators: config?.administrators ?? [], managementGroups: config?.managementGroups ?? [], localPath: config?.localPath || 'data/memebot-archive',
+    paperMaxMb: config?.paperMaxMb || 100, workMaxMb: config?.workMaxMb || 500,
+    r2: {
+      enabled: suppliedR2?.enabled ?? false,
+      accountId: suppliedR2?.accountId ?? '',
+      bucketName: suppliedR2?.bucketName ?? '',
+      accessKeyId: suppliedR2?.accessKeyId ?? '',
+      secretAccessKey: suppliedR2?.secretAccessKey ?? '',
+      objectPrefix: suppliedR2?.objectPrefix || 'memebot-archive',
+    },
+  }
+  if (config.r2.enabled) {
+    const missing = (['accountId', 'bucketName', 'accessKeyId', 'secretAccessKey'] as const).filter(key => !config.r2[key])
+    if (missing.length) throw new Error(`R2 已启用但配置不完整：${missing.join(', ')}`)
+  }
   ctx.model.extend('archivePaper', {
-    id: 'string', issueNumber: 'string', month: 'string', title: 'string', description: 'text', sourceLink: 'string', attachment: 'text', lifecycle: 'string', publishedAt: 'timestamp', updatedAt: 'timestamp',
+    id: 'string', issueNumber: 'string', month: 'string', title: 'string', description: 'text', sourceLink: 'string', attachment: 'text', lifecycle: 'string', backupState: 'string', backupError: 'text', publishedAt: 'timestamp', updatedAt: 'timestamp',
   }, { primary: 'id' })
+  ctx.model.extend('archiveWork', { id: 'string', title: 'string', author: 'string', description: 'text', attachment: 'text', lifecycle: 'string', backupState: 'string', backupError: 'text', publishedAt: 'timestamp', updatedAt: 'timestamp' }, { primary: 'id' })
   ctx.model.extend('archiveSequence', { kind: 'string', value: 'unsigned' }, { primary: 'kind' })
-  const service = new ArchiveService({ config, metadata: new KoishiArchiveMetadataRepository(ctx) })
-  const ready = service.initialize()
-  new ArchiveConsoleFeatures(ctx, service, ready).register()
+  ctx.model.extend('archiveBackupJob', { id: 'string', recordKind: 'string', recordId: 'string', attachment: 'text', manifest: 'text', state: 'string', attempts: 'unsigned', nextAttemptAt: 'timestamp', error: 'text' }, { primary: 'id' })
+  const metadata = new KoishiArchiveMetadataRepository(ctx)
+  const r2 = config.r2.enabled ? new S3R2Store(config.r2) : undefined
+  const local = new LocalAttachmentStore(config.localPath, r2, config.r2.objectPrefix)
+  let service!: ArchiveService
+  const sink: BackupStatusSink = { update: async (kind, id, state, error) => {
+    await metadata.updateBackupState(kind, id, state, error)
+    const item = kind === 'paper' ? service?.getIssue(id) : service?.getWork(id)
+    if (item) { item.backupState = state; item.backupError = error }
+  } }
+  const queue = r2 ? new PersistentArchiveBackupQueue(ctx, local, r2, sink) : undefined
+  service = new ArchiveService({ config, metadata, local, backupQueue: queue })
+  const preflight = new ArchivePreflight(config.localPath, r2, [config.r2.accessKeyId, config.r2.secretAccessKey])
+  const initialized = service.initialize()
+  const ready = Promise.all([initialized, preflight.check()]).then(([, health]) => { if (health.state === 'unavailable') throw new Error(health.stores.local.error || '本地存储不可用') })
+  void ready.catch(() => undefined)
+  new ArchiveConsoleFeatures(ctx, service, ready, preflight, queue).register()
+  if (queue) ctx.setInterval(() => { void queue.runDue() }, 60_000)
   ;(ctx as any).archive = service
   const root = ctx.command('archive [id:text]', '搜索或获取 Paper 归档')
   root.action(async ({ session }, id) => {
     await ready
-    if (!id) return '请使用 /archive search paper [查询]，或 /archive P编号。'
+    if (!id) return '请使用 /archive search paper [查询]、/archive search works [查询]，或 /archive P/W编号。'
+    if (/^w\d+$/i.test(id)) {
+      const work = service.getWork(id)
+      if (!work?.attachment) return 'Work 不存在。'
+      const data = await service.recover(work)
+      await session?.send(`${work.id} ${work.author} - ${work.title}\n${work.description ?? ''}`.trim())
+      return h.file(`data:${work.attachment.contentType};base64,${Buffer.from(data!).toString('base64')}`, { filename: work.attachment.relativePath.split('/').pop() || `${work.id}.zip` })
+    }
     const paper = service.getIssue(id)
     if (!paper) return 'Paper 不存在。'
     const detail = `${paper.id} ${paper.month} 第${paper.issueNumber}期 ${paper.title}\n${paper.description ?? ''}`.trim()
@@ -494,6 +713,33 @@ export function apply(ctx: Context, config: Config) {
       return `已发布 Paper ${paper.id}。`
     } catch (error) { return error instanceof Error ? error.message : String(error) }
   })
+  root.subcommand('.publish.works', '引导发布一个 ZIP Work Package').action(async ({ session }) => {
+    await ready
+    if (!session) return '无法识别当前会话。'
+    const archiveSession = commandSession(session)
+    service.requireAdmin(archiveSession)
+    try {
+      const title = await guidedPrompt(session, '请输入 Work 标题。')
+      const author = await guidedPrompt(session, '请输入作者。')
+      const description = await guidedPrompt(session, '请输入描述。', true)
+      await session.send('请发送一个 ZIP Work Package；也可发送 ZIP 下载地址。')
+      const uploadSession = await session.prompt((incoming: any) => incoming, { timeout: 300000 })
+      if (!uploadSession) throw new Error('等待 ZIP 已超时。')
+      const element = (uploadSession.elements || []).find((item: any) => item.type === 'file')
+      const zipUrl = element?.attrs?.src || element?.attrs?.url || String(uploadSession.content || '').trim()
+      if (!zipUrl) throw new Error('没有收到 ZIP 附件或下载地址。')
+      const response = await fetch(zipUrl)
+      if (!response.ok) throw new Error(`ZIP 下载失败：${response.status}`)
+      const input: WorkInput = {
+        title, author, description: description || undefined,
+        attachment: { filename: element?.attrs?.filename || element?.attrs?.title || `${title}.zip`, contentType: element?.attrs?.mime || response.headers.get('content-type') || 'application/zip', data: new Uint8Array(await response.arrayBuffer()) },
+      }
+      await session.send(`Work 预览\n标题：${title}\n作者：${author}\n请发送“确认”发布，其他输入取消。`)
+      if ((await session.prompt(300000))?.trim() !== '确认') return '已取消发布。'
+      const work = await service.publishWork(archiveSession, input)
+      return `已发布 Work ${work.id}。`
+    } catch (error) { return error instanceof Error ? error.message : String(error) }
+  })
   root.subcommand('.edit.paper <id:string>', '引导编辑 Paper 元数据').action(async ({ session }, id) => {
     await ready
     if (!session) return '无法识别当前会话。'
@@ -518,11 +764,15 @@ export function apply(ctx: Context, config: Config) {
   })
   root.subcommand('.works [query:text]', '查询 Work').action(async ({ session }, query) => {
     const items = service.searchWorks({ text: query })
-    return items.length ? items.map(item => `${item.id} ${item.author} - ${item.title} (${item.month})`).join('\n') : '没有找到 Work。'
+    return items.length ? items.map(item => `${item.id} ${item.author} - ${item.title}`).join('\n') : '没有找到 Work。'
   })
-  root.subcommand('.work-query [month:text] [author:text] [query:text]', '按月份、作者或文本查询 Work').action(async ({ session }, month, author, query) => {
-    const items = service.searchWorks({ month, author, text: query })
-    return items.length ? items.map(item => `${item.id} ${item.author} - ${item.title} (${item.month})`).join('\n') : '没有找到 Work。'
+  root.subcommand('.search works [query:text]', '按标题、作者或描述搜索 Work').action(async (_meta, query) => {
+    const items = service.searchWorks({ text: query })
+    return items.length ? items.map(item => `${item.id} ${item.author} - ${item.title}`).join('\n') : '没有找到 Work。'
+  })
+  root.subcommand('.work-query [author:text] [query:text]', '按作者或文本查询 Work').action(async ({ session }, author, query) => {
+    const items = service.searchWorks({ author, text: query })
+    return items.length ? items.map(item => `${item.id} ${item.author} - ${item.title}`).join('\n') : '没有找到 Work。'
   })
   root.subcommand('.issue-preview <metadata:text>', '预览 Newspaper Issue 元数据').action(({ session }, metadata) => {
     service.requireAdmin(commandSession(session))
@@ -544,15 +794,15 @@ export function apply(ctx: Context, config: Config) {
   root.subcommand('.issue-edit <id:string> <confirmation:string> <patch:text>', '编辑 Newspaper Issue 元数据').action(async ({ session }, id, confirmation, patch) => {
     return `已更新 Newspaper Issue ${(await service.updateIssue(commandSession(session), id, payload(patch), confirmation)).id}。`
   })
-  root.subcommand('.work-edit <id:string> <confirmation:string> <patch:text>', '编辑 Work 元数据').action(({ session }, id, confirmation, patch) => {
-    return `已更新 Work ${service.updateWork(commandSession(session), id, payload(patch), confirmation).id}。`
+  root.subcommand('.work-edit <id:string> <confirmation:string> <patch:text>', '编辑 Work 元数据').action(async ({ session }, id, confirmation, patch) => {
+    return `已更新 Work ${(await service.updateWork(commandSession(session), id, payload(patch), confirmation)).id}。`
   })
   root.subcommand('.issue-remove <id:string> <confirmation:string>', '删除 Newspaper Issue').action(async ({ session }, id, confirmation) => {
     await service.removeIssue(commandSession(session), id, confirmation)
     return `已删除 Newspaper Issue ${id}。`
   })
-  root.subcommand('.work-remove <id:string> <confirmation:string>', '删除 Work').action(({ session }, id, confirmation) => {
-    service.removeWork(commandSession(session), id, confirmation)
+  root.subcommand('.work-remove <id:string> <confirmation:string>', '删除 Work').action(async ({ session }, id, confirmation) => {
+    await service.removeWork(commandSession(session), id, confirmation)
     return `已删除 Work ${id}。`
   })
   root.subcommand('.retry', '重试附件 R2 同步').action(async ({ session }) => { service.requireAdmin(commandSession(session)); await service.retryPending(); return '已重试待同步附件。' })
