@@ -369,6 +369,17 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@koishijs/plugin-database-memory@npm:^3.7.0":
+  version: 3.7.0
+  resolution: "@koishijs/plugin-database-memory@npm:3.7.0"
+  dependencies:
+    "@minatojs/driver-memory": "npm:^3.7.0"
+  peerDependencies:
+    koishi: ^4.18.10
+  checksum: 10c0/223e548514d7bf9d644fa3dbe8460bf09c50db5c1922c8fe7e6ef8077ab4a9e32ae02a47fb2940f4434a4a2b123250aca5e0db5729f40860de0bb22bdfc85f0b
+  languageName: node
+  linkType: hard
+
 "@koishijs/plugin-http@npm:^0.6.3":
   version: 0.6.3
   resolution: "@koishijs/plugin-http@npm:0.6.3"
@@ -377,6 +388,15 @@ __metadata:
   peerDependencies:
     koishi: ^4.18.0
   checksum: 10c0/0977380b81a1a6e7645da0867aa11251d6bdeeb93d1c7be925867b746b57621c51201b0ef911cb9a265601ab8f70a58fd8e1ecfce4dba79a6b76861041b6f9b2
+  languageName: node
+  linkType: hard
+
+"@koishijs/plugin-mock@npm:^2.6.6":
+  version: 2.6.6
+  resolution: "@koishijs/plugin-mock@npm:2.6.6"
+  peerDependencies:
+    koishi: ^4.17.9
+  checksum: 10c0/1d0577db0e3e76754217162677b541cd374af2c266cb20d6ff646fc096b8f75ab20f8803d9a76374bddc83693458c6d6e1340ef249705079544f6fa5037b0811
   languageName: node
   linkType: hard
 
@@ -409,6 +429,17 @@ __metadata:
     cosmokit: "npm:^1.7.2"
     inaba: "npm:^1.1.1"
   checksum: 10c0/89e034ec3715a349fe8f5419d0a7f4212083f8756c0c28193b963f845d7c4c3f8ba8cb760b5cc965ffc6efbd24e404d95d9efe09dfa13b137d2852720f66a478
+  languageName: node
+  linkType: hard
+
+"@minatojs/driver-memory@npm:^3.7.0":
+  version: 3.7.0
+  resolution: "@minatojs/driver-memory@npm:3.7.0"
+  dependencies:
+    cosmokit: "npm:^1.6.3"
+  peerDependencies:
+    minato: ^3.7.0
+  checksum: 10c0/7c96b2c23a7123a98f5e949d048301ec59ec58a8b9b426b91d7901506235be41431f1f460c4c5322dae944a6fb1b91796d20dc7dfe62fa24deffd94137f0f4d2
   languageName: node
   linkType: hard
 
@@ -1954,7 +1985,11 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "memebot@workspace:."
   dependencies:
+    "@koishijs/plugin-database-memory": "npm:^3.7.0"
+    "@koishijs/plugin-mock": "npm:^2.6.6"
+    koishi: "npm:^4.18.7"
     typescript: "npm:^5.6.2"
+    vitest: "npm:^3.2.4"
   languageName: unknown
   linkType: soft
 
