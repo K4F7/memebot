@@ -66,4 +66,31 @@ describe('archive preflight and persistent backup', () => {
     expect(objects.has('club/manifests/paper/P1.json')).toBe(true)
     expect(states.at(-1)).toBe('complete')
   })
+
+  it('uses the 1 minute, 5 minute, 30 minute, then 6 hour retry schedule', async () => {
+    const root = await tempRoot(); const ctx = fakeContext() as any; let now = new Date('2026-08-02T00:00:00Z'); let attempts = 0
+    const r2 = { async put() { attempts += 1; throw new Error('offline') }, async get() { return undefined }, async delete() {} }
+    const local = new LocalAttachmentStore(root, r2)
+    const attachment = await local.save('P1', { filename: 'paper.pdf', data: '%PDF-1.7\n%%EOF' })
+    const queue = new PersistentArchiveBackupQueue(ctx, local, r2, { async update() {} }, () => now)
+    await queue.enqueue(attachment, { recordKind: 'paper', recordId: 'P1', manifest: { id: 'P1' } }); await queue.runDue(); expect(attempts).toBe(1)
+    now = new Date('2026-08-02T00:00:59Z'); await queue.runDue(); expect(attempts).toBe(1)
+    now = new Date('2026-08-02T00:01:00Z'); await queue.runDue(); expect(attempts).toBe(2)
+    now = new Date('2026-08-02T00:06:00Z'); await queue.runDue(); expect(attempts).toBe(3)
+    now = new Date('2026-08-02T00:36:00Z'); await queue.runDue(); expect(attempts).toBe(4)
+    now = new Date('2026-08-02T06:36:00Z'); await queue.runDue(); expect(attempts).toBe(5)
+  })
+
+  it('does not report complete until both attachment and manifest are synchronized', async () => {
+    const root = await tempRoot(); const ctx = fakeContext() as any; let now = new Date('2026-08-02T00:00:00Z'); let failManifest = true
+    const states: string[] = []; const objects = new Map<string, Uint8Array>()
+    const r2 = { async put(key: string, data: Uint8Array) { if (key.includes('/manifests/') && failManifest) { failManifest = false; throw new Error('manifest failed') } objects.set(key, data) }, async get(key: string) { return objects.get(key) }, async delete() {} }
+    const local = new LocalAttachmentStore(root, r2)
+    const attachment = await local.save('P1', { filename: 'paper.pdf', data: '%PDF-1.7\n%%EOF' })
+    const queue = new PersistentArchiveBackupQueue(ctx, local, r2, { async update(_kind, _id, state) { states.push(state) } }, () => now)
+    await queue.enqueue(attachment, { recordKind: 'paper', recordId: 'P1', manifest: { id: 'P1' } }); await queue.runDue()
+    expect(states.at(-1)).toBe('failed'); expect((await queue.counts()).complete).toBe(0)
+    now = new Date('2026-08-02T00:01:00Z'); await queue.runDue()
+    expect(states.at(-1)).toBe('complete'); expect((await queue.counts()).complete).toBe(1)
+  })
 })

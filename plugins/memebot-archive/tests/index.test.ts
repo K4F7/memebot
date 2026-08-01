@@ -38,6 +38,9 @@ describe('archive integration paths', () => {
     expect(listeners).toEqual(expect.arrayContaining([
       'memebot/archive/papers', 'memebot/archive/paper/create', 'memebot/archive/paper/upload',
       'memebot/archive/paper/preview', 'memebot/archive/paper/edit', 'memebot/archive/paper/download',
+      'memebot/archive/status', 'memebot/archive/recheck', 'memebot/archive/backup/retry',
+      'memebot/archive/works', 'memebot/archive/work/create', 'memebot/archive/work/upload',
+      'memebot/archive/work/tree', 'memebot/archive/work/preview', 'memebot/archive/work/download',
     ]))
   })
   it('keeps R2 failures retryable and eventually syncs', async () => {

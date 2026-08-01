@@ -105,4 +105,17 @@ describe('intake notification and work tracking', () => {
     expect(retained?.attachments).toEqual([])
     expect(retained?.audit.map(event => event.action)).toContain('close')
   })
+
+  it('marks the one-time acceptance notice only after successful delivery', async () => {
+    const ctx = fakeContext() as any
+    const records = new IntakeService(ctx)
+    const record = await records.create({ type: 'suggestion', submitterId: '10001', sourceSession: 'qq:private:10001', body: '建议', attachments: [] })
+    await records.claim(record.id, 'admin')
+    await expect(records.deliverAcceptanceNotice(record.id, async () => { throw new Error('send failed') })).rejects.toThrow('send failed')
+    expect((await records.get(record.id))?.acceptanceNotified).toBe(false)
+    let delivered = 0
+    expect(await records.deliverAcceptanceNotice(record.id, async () => { delivered += 1 })).toBe(true)
+    expect(await records.deliverAcceptanceNotice(record.id, async () => { delivered += 1 })).toBe(false)
+    expect(delivered).toBe(1)
+  })
 })

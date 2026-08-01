@@ -257,7 +257,7 @@ export class IntakeService {
     if (record.acceptanceNotified) return record
     return this.mutate(id, { acceptanceNotified: true }, { action: 'acceptance-notified' })
   }
-  async reserveAcceptanceNotice(id: string) {
+  async deliverAcceptanceNotice(id: string, notify: (record: IntakeRecord) => Promise<void>) {
     const previous = this.claimLocks.get(id) ?? Promise.resolve()
     let release!: () => void
     const current = new Promise<void>(resolve => { release = resolve })
@@ -266,7 +266,9 @@ export class IntakeService {
     await previous
     try {
       const record = await this.get(id)
-      if (!record || record.acceptanceNotified) return false
+      if (!record) throw new Error('记录不存在')
+      if (record.acceptanceNotified) return false
+      await notify(record)
       await this.mutate(id, { acceptanceNotified: true }, { action: 'acceptance-notified' })
       return true
     } finally {
@@ -627,14 +629,14 @@ export function apply(ctx: Context, config: Config) {
         if (action === '认领') {
           const claimed = await store.claim(current.id, userId)
           if (claimed.assigneeId !== userId) return `${claimed.id} 已由 ${claimed.assigneeId} 认领。`
-          if (await store.reserveAcceptanceNotice(claimed.id)) await transport.notifySubmitter(claimed.submitterId, `${claimed.id} 已由管理员 ${userId} 认领；管理员将通过 QQ 直接联系你。`)
+          await store.deliverAcceptanceNotice(claimed.id, record => transport.notifySubmitter(record.submitterId, `${record.id} 已由管理员 ${userId} 认领；管理员将通过 QQ 直接联系你。`))
           return `已认领 ${claimed.id}。`
         }
         const transfer = /^转交\s+(\d+)$/.exec(action)
         if (transfer) return formatRecord(await store.transfer(current.id, transfer[1], userId))
         if (action === '取消认领') return formatRecord(await store.clearAssignment(current.id, userId))
         if (action === '关闭') return formatRecord(await store.close(current.id, userId))
-        if (action === '重开') return formatRecord(await store.reopen(current.id, userId))
+        if (action === '重开' || action === '打开') return formatRecord(await store.reopen(current.id, userId))
         const statusByAction: Partial<Record<IntakeType, Record<string, IntakeStatus>>> = {
           feedback: { 处理中: 'processing', 已解决: 'resolved' },
           submission: { 通过: 'approved', 拒绝: 'rejected' },

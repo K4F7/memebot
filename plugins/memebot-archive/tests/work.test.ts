@@ -20,13 +20,13 @@ function crc32(data: Uint8Array) {
   for (const byte of data) { crc ^= byte; for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1)) }
   return (crc ^ 0xffffffff) >>> 0
 }
-function zip(entries: Array<{ name: string; data?: string; flags?: number; external?: number }>) {
+function zip(entries: Array<{ name: string; data?: string; flags?: number; external?: number; declaredSize?: number }>) {
   const locals: Buffer[] = []; const centrals: Buffer[] = []; let offset = 0
   for (const entry of entries) {
     const name = Buffer.from(entry.name); const raw = Buffer.from(entry.data ?? ''); const compressed = deflateRawSync(raw); const crc = crc32(raw)
     const local = Buffer.alloc(30); local.writeUInt32LE(0x04034b50); local.writeUInt16LE(20, 4); local.writeUInt16LE(entry.flags ?? 0, 6); local.writeUInt16LE(8, 8); local.writeUInt32LE(crc, 14); local.writeUInt32LE(compressed.length, 18); local.writeUInt32LE(raw.length, 22); local.writeUInt16LE(name.length, 26)
     locals.push(local, name, compressed)
-    const central = Buffer.alloc(46); central.writeUInt32LE(0x02014b50); central.writeUInt16LE(0x031e, 4); central.writeUInt16LE(20, 6); central.writeUInt16LE(entry.flags ?? 0, 8); central.writeUInt16LE(8, 10); central.writeUInt32LE(crc, 16); central.writeUInt32LE(compressed.length, 20); central.writeUInt32LE(raw.length, 24); central.writeUInt16LE(name.length, 28); central.writeUInt32LE((entry.external ?? 0) >>> 0, 38); central.writeUInt32LE(offset, 42)
+    const central = Buffer.alloc(46); central.writeUInt32LE(0x02014b50); central.writeUInt16LE(0x031e, 4); central.writeUInt16LE(20, 6); central.writeUInt16LE(entry.flags ?? 0, 8); central.writeUInt16LE(8, 10); central.writeUInt32LE(crc, 16); central.writeUInt32LE(compressed.length, 20); central.writeUInt32LE(entry.declaredSize ?? raw.length, 24); central.writeUInt16LE(name.length, 28); central.writeUInt32LE((entry.external ?? 0) >>> 0, 38); central.writeUInt32LE(offset, 42)
     centrals.push(central, name); offset += local.length + name.length + compressed.length
   }
   const centralSize = centrals.reduce((sum, part) => sum + part.length, 0); const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10); end.writeUInt32LE(centralSize, 12); end.writeUInt32LE(offset, 16)
@@ -53,6 +53,8 @@ describe('work packages and previews', () => {
     const restarted = new ArchiveService({ config: { localPath: root }, metadata }); await restarted.initialize()
     expect(restarted.getWork('w1')?.title).toBe('作品')
     expect(restarted.searchWorks({ text: '作者' })[0].id).toBe('W1')
+    await rm(join(root, '.previews', 'W1'), { recursive: true, force: true })
+    expect((await restarted.rebuildWorkPreview('W1'))[0].path).toBe('README.txt')
   })
 
   it('extracts a confined tree and classifies safe previews without executing web content', async () => {
@@ -62,6 +64,7 @@ describe('work packages and previews', () => {
     expect((await previews.preview('W1', 'README.txt')).text).toBe('hello')
     expect((await previews.preview('W1', 'site/index.html')).sandbox).toBe('allow-downloads')
     expect((await previews.preview('W1', 'run.exe')).previewable).toBe(false)
+    expect(new TextDecoder().decode(await previews.download('W1', 'run.exe'))).toBe('MZ')
   })
 
   it.each([
@@ -76,5 +79,11 @@ describe('work packages and previews', () => {
   it('rejects more than 2000 entries', async () => {
     const root = await tempRoot(); const entries = Array.from({ length: 2001 }, (_, index) => ({ name: `${index}.txt`, data: '' }))
     await expect(new WorkPreviewStore(root).build('W1', zip(entries))).rejects.toThrow('2000')
+  })
+
+  it('rejects an invalid ZIP and expanded data over 2 GB', async () => {
+    const root = await tempRoot(); const previews = new WorkPreviewStore(root)
+    await expect(previews.build('W1', new Uint8Array([1, 2, 3]))).rejects.toThrow('结构有效')
+    await expect(previews.build('W2', zip([{ name: 'huge.bin', data: '', declaredSize: 0x80000001 }]))).rejects.toThrow('2 GB')
   })
 })
