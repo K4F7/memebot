@@ -105,13 +105,14 @@ export async function createKoishiTestHarness<Config, Result>(
   })
 
   app.plugin(memory as any)
+  app.reflect.provide('console', { addListener() {} })
   const captureFork = app.plugin((ctx) => new BroadcastCaptureBot(ctx, broadcasts))
   const mockFork = app.plugin(mock as any, { selfId: '514' })
   // The harness always provides a database. Declare that dependency on the
   // test fork so plugins can exercise ctx.model/ctx.broadcast without warnings.
   app.plugin({
     ...plugin,
-    inject: ['database'],
+    inject: (plugin as any).inject ?? ['database'],
     apply(ctx: Context, pluginConfig: Config) {
       pluginResult = plugin.apply(ctx, pluginConfig)
     },

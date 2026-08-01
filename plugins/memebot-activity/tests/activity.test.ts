@@ -56,11 +56,11 @@ describe('activity behavior', () => {
   })
 
   it('requires both authority and an administrator whitelist match', () => {
-    const config = { adminUserIds: ['10001'], adminGroupIds: ['20001'] }
-    expect(isAdministrator({ userId: '10001', user: { authority: 4 } }, config)).toBe(true)
-    expect(isAdministrator({ guildId: '20001', user: { authority: 4 } }, config)).toBe(true)
-    expect(isAdministrator({ userId: '10001', user: { authority: 3 } }, config)).toBe(false)
-    expect(isAdministrator({ userId: 'other', user: { authority: 5 } }, config)).toBe(false)
+    const config = { administrators: [{ qq: '10001' }], managementGroups: [{ qq: '20001' }] }
+    expect(isAdministrator({ userId: '10001', guildId: '20001', user: { authority: 1 } }, config)).toBe(true)
+    expect(isAdministrator({ userId: 'other', guildId: '20001', user: { authority: 4 } }, config)).toBe(true)
+    expect(isAdministrator({ userId: 'other', guildId: '20001', user: { authority: 3 } }, config)).toBe(false)
+    expect(isAdministrator({ userId: '10001', guildId: 'other', user: { authority: 5 } }, config)).toBe(false)
   })
 
   it('routes optional broadcasts to all configured users and groups', async () => {
@@ -79,11 +79,10 @@ describe('activity behavior', () => {
       broadcast,
     } as any
     const config = {
-      adminUserIds: [],
-      adminGroupIds: [],
-      broadcastUserIds: ['10001', '10002'],
-      broadcastGroupIds: ['20001', '10001'],
-      broadcastPlatform: 'qq',
+      administrators: [],
+      managementGroups: [],
+      notificationUsers: [{ qq: '10001' }, { qq: '10002' }],
+      notificationGroups: [{ qq: '20001' }, { qq: '10001' }],
     }
     const service = new ActivityService(ctx, config)
 
@@ -107,11 +106,10 @@ describe('activity behavior', () => {
       broadcast: vi.fn(),
     } as any
     const service = new ActivityService(ctx, {
-      adminUserIds: [],
-      adminGroupIds: [],
-      broadcastUserIds: [],
-      broadcastGroupIds: [],
-      broadcastPlatform: 'qq',
+      administrators: [],
+      managementGroups: [],
+      notificationUsers: [],
+      notificationGroups: [],
     })
 
     expect((await service.update(1, { status: 'active' })).status).toBe('active')

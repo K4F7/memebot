@@ -1,6 +1,7 @@
 import { Context, Schema, Session } from 'koishi'
 
 export const name = 'memebot-faq'
+export const inject = ['database']
 
 export interface FaqEntry {
   id: number
@@ -16,16 +17,16 @@ declare module 'koishi' {
 }
 
 export interface Config {
-  adminUserIds: string[]
-  adminGroupIds: string[]
-  minAuthority: number
+  administrators: Array<{ qq: string }>
+  managementGroups: Array<{ qq: string }>
   pageSize: number
 }
 
+const qqTable = () => Schema.array(Schema.object({ qq: Schema.string().description('QQ 号') }))
+
 export const Config: Schema<Config> = Schema.object({
-  adminUserIds: Schema.array(String).default([]).description('管理员用户 ID 白名单'),
-  adminGroupIds: Schema.array(String).default([]).description('管理员群组 ID 白名单'),
-  minAuthority: Schema.number().default(4).description('最低 Koishi authority'),
+  administrators: qqTable().default([]).description('显式授权的管理员 QQ'),
+  managementGroups: qqTable().default([]).description('允许执行管理动作的 QQ 群'),
   pageSize: Schema.number().default(10).min(1).max(50).description('每页公开 FAQ 数量'),
 })
 
@@ -33,11 +34,13 @@ export interface FaqInput { question: string; answer: string; visible?: boolean 
 export interface FaqPatch { question?: string; answer?: string; visible?: boolean }
 export interface FaqSession extends Pick<Session, 'userId' | 'guildId' | 'channelId'> { user?: { authority?: number } }
 
-export function isAdministrator(session: FaqSession, config: Pick<Config, 'adminUserIds' | 'adminGroupIds' | 'minAuthority'>): boolean {
-  if ((session.user?.authority ?? 0) < config.minAuthority) return false
+export function isAdministrator(session: FaqSession, config: Pick<Config, 'administrators' | 'managementGroups'>): boolean {
   const groupId = session.guildId ?? session.channelId
-  return (!!session.userId && config.adminUserIds.includes(session.userId))
-    || (!!groupId && config.adminGroupIds.includes(groupId))
+  const identity = (session.user?.authority ?? 0) >= 4
+    || (!!session.userId && config.administrators.some(item => item.qq === session.userId))
+  const location = !session.guildId || !config.managementGroups.length
+    || (!!groupId && config.managementGroups.some(item => item.qq === groupId))
+  return identity && location
 }
 
 function requiredText(value: string | undefined, label: string) {
@@ -64,12 +67,18 @@ export function selectNumber<T>(items: readonly T[], number: number): T | undefi
 
 export function formatFaqList(page: ReturnType<typeof paginate<FaqEntry>>): string {
   if (!page.total) return '暂无公开 FAQ。'
-  const lines = page.items.map((entry, index) => ((page.currentPage - 1) * page.pageSize + index + 1) + '. ' + entry.question)
-  return 'FAQ（第 ' + page.currentPage + '/' + page.totalPages + ' 页）\n' + lines.join('\n') + '\n可使用 faq.get <编号> 查看答案。'
+  const lines = page.items.map(entry => '#' + entry.id + ' ' + entry.question)
+  return 'FAQ（第 ' + page.currentPage + '/' + page.totalPages + ' 页）\n' + lines.join('\n') + '\n可使用 /faq #编号 查看答案。'
 }
 
 export function formatFaq(entry: Pick<FaqEntry, 'id' | 'question' | 'answer'>): string {
   return 'FAQ #' + entry.id + '\n问题：' + entry.question + '\n答案：' + entry.answer
+}
+
+export function parseFaqId(value: string | number): number {
+  const match = /^#?(\d+)$/.exec(String(value).trim())
+  if (!match || Number(match[1]) < 1) throw new Error('FAQ 编号必须写作 #自然数。')
+  return Number(match[1])
 }
 
 export class FaqService {
@@ -91,6 +100,7 @@ export class FaqService {
   async remove(id: number) {
     const current = await this.get(id)
     if (!current) throw new Error('FAQ 不存在')
+    if (current.visible) throw new Error('请先隐藏 FAQ，再永久删除。')
     await this.ctx.model.remove('faq', { id })
     return current
   }
@@ -112,7 +122,7 @@ function commandSession(session: Session): FaqSession {
 }
 
 export function apply(ctx: Context, config: Config) {
-  const settings: Config = { adminUserIds: [], adminGroupIds: [], minAuthority: 4, pageSize: 10, ...(config as Partial<Config>) }
+  const settings: Config = { administrators: [], managementGroups: [], pageSize: 10, ...(config as Partial<Config>) }
   ctx.model.extend('faq', {
     id: 'unsigned', question: 'string', answer: 'text', visible: 'boolean', createdAt: 'timestamp', updatedAt: 'timestamp',
   }, { autoInc: true })
@@ -120,33 +130,77 @@ export function apply(ctx: Context, config: Config) {
   ;(ctx as any).faq = service
 
   const publicList = async (page = 1) => formatFaqList(await service.listPublic(Number(page) || 1, settings.pageSize))
-  const root = ctx.command('faq [page:posint]', '查看 FAQ').action(async (_meta, page) => publicList(page))
-  root.subcommand('.list [page:posint]', '分页查看公开 FAQ').action(async (_meta, page) => publicList(page))
-  root.subcommand('.get <number:posint>', '查看指定 FAQ 的答案').action(async (_meta, number) => {
-    const page = await service.listPublic(1, Number.MAX_SAFE_INTEGER)
-    const entry = selectNumber(page.items, Number(number))
-    return entry ? formatFaq(entry) : 'FAQ 编号不存在。'
+  const root = ctx.command('faq [query:text]', '分页查看 FAQ，或使用 #编号查看完整答案').action(async ({ session }, query) => {
+    const value = String(query ?? '').trim()
+    if (!value) return publicList(1)
+    const detail = /^#(\d+)$/.exec(value)
+    if (detail) {
+      const entry = await service.get(Number(detail[1]))
+      const administrator = !!session && isAdministrator(commandSession(session), settings)
+      return entry && (entry.visible || administrator) ? formatFaq(entry) : 'FAQ 编号不存在。'
+    }
+    if (/^\d+$/.test(value)) return publicList(Number(value))
+    return '请输入页码或 #编号。'
   })
 
-  const denied = '只有管理员白名单中的四级及以上用户可以管理 FAQ。'
-  const admin = (command: string, handler: (meta: any, ...args: any[]) => Promise<string>) => ctx.command(command).action(async (meta, ...args) => {
+  const denied = '只有显式管理员 QQ 或 authority 4 用户可在管理位置管理 FAQ。'
+  const admin = (command: string, description: string, handler: (meta: any, ...args: any[]) => Promise<string>) => ctx.command(command, description).action(async (meta, ...args) => {
     if (!meta.session || !isAdministrator(commandSession(meta.session), settings)) return denied
     try { return await handler(meta, ...args) } catch (error) { return error instanceof Error ? error.message : String(error) }
   })
-  admin('faq.admin.add <question:text> <answer:text>', async (_meta, question, answer) => formatFaq(await service.create({ question, answer })))
-  const edit = ctx.command('faq.admin.edit <id:posint>', '编辑 FAQ').option('question', '-q <question:text>').option('answer', '-a <answer:text>')
-  edit.action(async (meta, id) => {
-    if (!meta.session || !isAdministrator(commandSession(meta.session), settings)) return denied
-    const options = meta.options ?? {}
-    try { return formatFaq(await service.update(Number(id), { question: options.question, answer: options.answer })) } catch (error) { return error instanceof Error ? error.message : String(error) }
+  const prompt = async (session: Session, label: string) => {
+    await session.send(label)
+    const value = (await session.prompt(300000))?.trim()
+    if (!value) throw new Error('操作已超时或输入为空。')
+    return value
+  }
+  const confirm = async (session: Session, preview: string) => {
+    await session.send(preview + '\n请发送“确认”继续，其他输入取消。')
+    return (await session.prompt(300000))?.trim() === '确认'
+  }
+  admin('faq.add', '引导新增 FAQ', async ({ session }) => {
+    const question = await prompt(session, '请输入问题。')
+    const answer = await prompt(session, '请输入答案。')
+    const preview = formatFaq({ id: 0, question, answer }).replace('#0', '预览')
+    if (!await confirm(session, preview)) return '已取消新增。'
+    return 'FAQ 新增成功。\n' + formatFaq(await service.create({ question, answer }))
   })
-  admin('faq.admin.hide <id:posint>', async (_meta, id) => '已隐藏 FAQ #' + id + '。\n' + formatFaq(await service.setVisibility(Number(id), false)))
-  admin('faq.admin.show <id:posint>', async (_meta, id) => '已公开 FAQ #' + id + '。\n' + formatFaq(await service.setVisibility(Number(id), true)))
-  admin('faq.admin.delete <id:posint>', async (_meta, id) => { await service.remove(Number(id)); return '已删除 FAQ #' + id + '。' })
-  admin('faq.admin.list', async () => {
+  admin('faq.edit <reference:string>', '引导编辑指定 #编号 FAQ', async ({ session }, reference) => {
+    const id = parseFaqId(reference)
+    const current = await service.get(id)
+    if (!current) throw new Error('FAQ 不存在')
+    const choice = await prompt(session, formatFaq(current) + '\n请选择要修改的内容：问题、答案或两者。')
+    if (!['问题', '答案', '两者'].includes(choice)) throw new Error('请选择“问题”“答案”或“两者”。')
+    const patch: FaqPatch = {}
+    if (choice === '问题' || choice === '两者') patch.question = await prompt(session, '请输入新问题。')
+    if (choice === '答案' || choice === '两者') patch.answer = await prompt(session, '请输入新答案。')
+    const preview = { ...current, ...patch }
+    if (!await confirm(session, formatFaq(preview))) return '已取消编辑。'
+    return 'FAQ 编辑成功。\n' + formatFaq(await service.update(id, patch))
+  })
+  const visibility = (kind: 'hide' | 'show') => admin(`faq.${kind} <reference:string>`, kind === 'hide' ? '预览并隐藏 #编号 FAQ' : '预览并重新公开 #编号 FAQ', async ({ session }, reference) => {
+    const id = parseFaqId(reference)
+    const current = await service.get(id)
+    if (!current) throw new Error('FAQ 不存在')
+    if (!await confirm(session, formatFaq(current))) return '操作已取消。'
+    const visible = kind === 'show'
+    await service.setVisibility(id, visible)
+    return visible ? `已公开 FAQ #${id}。` : `已隐藏 FAQ #${id}。`
+  })
+  visibility('hide'); visibility('show')
+  admin('faq.rm <reference:string>', '预览并永久删除已隐藏的 #编号 FAQ', async ({ session }, reference) => {
+    const id = parseFaqId(reference)
+    const current = await service.get(id)
+    if (!current) throw new Error('FAQ 不存在')
+    if (current.visible) throw new Error('请先隐藏 FAQ，再永久删除。')
+    if (!await confirm(session, formatFaq(current))) return '已取消永久删除。'
+    await service.remove(id)
+    return `已永久删除 FAQ #${id}。`
+  })
+  admin('faq.manage', '查看全部 FAQ 及公开状态', async () => {
     const entries = await service.listAll()
     return entries.length ? entries.map(entry => entry.id + '. [' + (entry.visible ? '公开' : '隐藏') + '] ' + entry.question).join('\n') : '暂无 FAQ。'
   })
 }
 
-export default { name, Config, apply }
+export default { name, inject, Config, apply }

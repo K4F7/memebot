@@ -9,7 +9,7 @@ vi.mock('koishi', () => {
   return { Context: class {}, Schema: { object: chain, array: chain, number: chain, string: chain } }
 })
 
-import { FaqService, formatFaqList, isAdministrator, paginate, selectNumber } from '../src/index'
+import { FaqService, formatFaqList, isAdministrator, paginate, parseFaqId, selectNumber } from '../src/index'
 
 function fakeContext() {
   const rows: any[] = []
@@ -23,13 +23,18 @@ function fakeContext() {
 }
 
 describe('FAQ workflows', () => {
+  it('accepts stable # identifiers for management commands', () => {
+    expect(parseFaqId('#12')).toBe(12)
+    expect(() => parseFaqId('#0')).toThrow('自然数')
+  })
   it('validates and persists complete entries', async () => {
     const service = new FaqService(fakeContext() as any)
     const created = await service.create({ question: '  如何投稿？ ', answer: ' 使用投稿命令。 ' })
     expect(created.question).toBe('如何投稿？'); expect(created.answer).toBe('使用投稿命令。'); expect(created.visible).toBe(true)
     const updated = await service.update(created.id, { question: '在哪里投稿？', answer: '在群内使用投稿命令。' })
     expect(updated.question).toBe('在哪里投稿？'); expect((await service.get(created.id))?.answer).toBe('在群内使用投稿命令。')
-    await service.remove(created.id); expect(await service.get(created.id)).toBeUndefined()
+    await expect(service.remove(created.id)).rejects.toThrow('先隐藏')
+    await service.setVisibility(created.id, false); await service.remove(created.id); expect(await service.get(created.id)).toBeUndefined()
     await expect(service.create({ question: '', answer: 'answer' })).rejects.toThrow('问题不能为空')
   })
 
@@ -50,7 +55,7 @@ describe('FAQ workflows', () => {
   })
 
   it('requires authority and a matching administrator whitelist', () => {
-    const config = { adminUserIds: ['10001'], adminGroupIds: ['20001'], minAuthority: 4 }
-    expect(isAdministrator({ userId: '10001', user: { authority: 4 } }, config)).toBe(true); expect(isAdministrator({ guildId: '20001', user: { authority: 5 } }, config)).toBe(true); expect(isAdministrator({ userId: '10001', user: { authority: 3 } }, config)).toBe(false); expect(isAdministrator({ userId: 'other', guildId: 'other', user: { authority: 5 } }, config)).toBe(false)
+    const config = { administrators: [{ qq: '10001' }], managementGroups: [{ qq: '20001' }] }
+    expect(isAdministrator({ userId: '10001', guildId: '20001', user: { authority: 1 } }, config)).toBe(true); expect(isAdministrator({ userId: 'other', guildId: '20001', user: { authority: 4 } }, config)).toBe(true); expect(isAdministrator({ userId: 'other', guildId: '20001', user: { authority: 3 } }, config)).toBe(false); expect(isAdministrator({ userId: '10001', guildId: 'other', user: { authority: 5 } }, config)).toBe(false)
   })
 })

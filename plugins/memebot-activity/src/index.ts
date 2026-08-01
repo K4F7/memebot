@@ -1,6 +1,7 @@
 import { Context, Schema } from 'koishi'
 
 export const name = 'memebot-activity'
+export const inject = ['database']
 
 export type ActivityStatus = 'upcoming' | 'active' | 'ended' | 'cancelled'
 
@@ -24,19 +25,19 @@ declare module 'koishi' {
 }
 
 export interface Config {
-  adminUserIds: string[]
-  adminGroupIds: string[]
-  broadcastUserIds: string[]
-  broadcastGroupIds: string[]
-  broadcastPlatform: string
+  administrators: Array<{ qq: string }>
+  managementGroups: Array<{ qq: string }>
+  notificationUsers: Array<{ qq: string }>
+  notificationGroups: Array<{ qq: string }>
 }
 
+const qqTable = () => Schema.array(Schema.object({ qq: Schema.string().description('QQ 号') }))
+
 export const Config: Schema<Config> = Schema.object({
-  adminUserIds: Schema.array(String).default([]).description('允许管理活动的 QQ 用户号'),
-  adminGroupIds: Schema.array(String).default([]).description('允许管理活动的 QQ 群号'),
-  broadcastUserIds: Schema.array(String).default([]).description('活动广播接收用户号'),
-  broadcastGroupIds: Schema.array(String).default([]).description('活动广播接收群号'),
-  broadcastPlatform: Schema.string().default('qq').description('广播目标平台标识'),
+  administrators: qqTable().default([]).description('显式授权的管理员 QQ'),
+  managementGroups: qqTable().default([]).description('允许执行管理动作的 QQ 群'),
+  notificationUsers: qqTable().default([]).description('活动通知接收 QQ 用户'),
+  notificationGroups: qqTable().default([]).description('活动通知接收 QQ 群'),
 })
 
 export interface ActivityInput {
@@ -105,20 +106,20 @@ export function listVisibleActivities(activities: readonly Activity[], now = new
     .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime())
 }
 
-export function buildBroadcastTargets(config: Pick<Config, 'broadcastUserIds' | 'broadcastGroupIds' | 'broadcastPlatform'>): string[] {
-  const platform = config.broadcastPlatform.trim() || 'qq'
-  return [...config.broadcastUserIds, ...config.broadcastGroupIds]
-    .map((id) => id.trim())
+export function buildBroadcastTargets(config: Pick<Config, 'notificationUsers' | 'notificationGroups'>): string[] {
+  return [...config.notificationUsers, ...config.notificationGroups]
+    .map((item) => item.qq.trim())
     .filter(Boolean)
-    .map((id) => `${platform}:${id}`)
+    .map((id) => `qq:${id}`)
     .filter((target, index, targets) => targets.indexOf(target) === index)
 }
 
-export function isAdministrator(session: { userId?: string; guildId?: string; channelId?: string; user?: any }, config: Pick<Config, 'adminUserIds' | 'adminGroupIds'>): boolean {
-  if ((session.user?.authority ?? 0) < 4) return false
+export function isAdministrator(session: { userId?: string; guildId?: string; channelId?: string; user?: any }, config: Pick<Config, 'administrators' | 'managementGroups'>): boolean {
   const userId = session.userId ?? ''
-  const groupId = session.guildId ?? ''
-  return config.adminUserIds.includes(userId) || config.adminGroupIds.includes(groupId)
+  const groupId = session.guildId ?? session.channelId ?? ''
+  const identity = (session.user?.authority ?? 0) >= 4 || config.administrators.some(item => item.qq === userId)
+  const location = !session.guildId || !config.managementGroups.length || config.managementGroups.some(item => item.qq === groupId)
+  return identity && location
 }
 
 export class ActivityService {
@@ -147,11 +148,13 @@ export class ActivityService {
     return activity
   }
 
-  async cancel(id: number): Promise<Activity> {
+  async cancel(id: number, broadcast = false): Promise<Activity> {
     const current = await this.get(id)
     if (!current) throw new Error('活动不存在')
     await this.ctx.model.set('activity', { id }, { status: 'cancelled', updatedAt: new Date() })
-    return { ...current, status: 'cancelled', updatedAt: new Date() }
+    const activity = { ...current, status: 'cancelled' as const, updatedAt: new Date() }
+    if (broadcast) await this.broadcast(activity)
+    return activity
   }
 
   async get(id: number): Promise<Activity | undefined> {
@@ -162,6 +165,12 @@ export class ActivityService {
   async list(now = new Date()): Promise<Activity[]> {
     const rows = await this.ctx.model.get('activity', {}) as unknown as Activity[]
     return listVisibleActivities(rows, now)
+  }
+  async history(now = new Date()): Promise<Activity[]> {
+    const rows = await this.ctx.model.get('activity', {}) as unknown as Activity[]
+    return rows.map(activity => ({ ...activity, status: effectiveStatus(activity, now) }))
+      .filter(activity => activity.status === 'ended' || activity.status === 'cancelled')
+      .sort((a, b) => new Date(b.startAt).getTime() - new Date(a.startAt).getTime())
   }
 
   private async broadcast(activity: Activity): Promise<void> {
@@ -191,11 +200,10 @@ function parseStatus(value: string | undefined): ActivityStatus | undefined {
 
 export function apply(ctx: Context, config: Config) {
   const normalizedConfig: Config = {
-    adminUserIds: config.adminUserIds || [],
-    adminGroupIds: config.adminGroupIds || [],
-    broadcastUserIds: config.broadcastUserIds || [],
-    broadcastGroupIds: config.broadcastGroupIds || [],
-    broadcastPlatform: config.broadcastPlatform || 'qq',
+    administrators: config.administrators || [],
+    managementGroups: config.managementGroups || [],
+    notificationUsers: config.notificationUsers || [],
+    notificationGroups: config.notificationGroups || [],
   }
   ctx.model.extend('activity', {
     id: 'unsigned',
@@ -211,55 +219,80 @@ export function apply(ctx: Context, config: Config) {
   }, { autoInc: true })
 
   const service = new ActivityService(ctx, normalizedConfig)
-  ctx.command('activity.list', '查看即将开始和进行中的活动').action(async () => {
+  const list = async () => {
     const activities = await service.list()
     return activities.length ? activities.map(formatActivity).join('\n\n') : '暂无即将开始或进行中的活动。'
+  }
+  ctx.command('activity [query:text]', '查看近期活动，或使用 #编号查看详情').action(async (_meta, query) => {
+    const value = String(query ?? '').trim()
+    if (!value) return list()
+    const match = /^#(\d+)$/.exec(value)
+    if (!match) return '请输入 #活动编号，管理员可使用 /activity history。'
+    const activity = await service.get(Number(match[1]))
+    return activity ? formatActivity({ ...activity, status: effectiveStatus(activity) }) : '活动不存在。'
   })
 
-  const create = ctx.command('activity.create <title:text> <start:string> <end:string> <description:text>', '创建活动')
-    .option('status', '-s <status:string> 活动状态')
-    .option('location', '-l <location:string> 活动地点')
-    .option('link', '-u <link:string> 参考链接')
-    .option('broadcast', '-b 广播给已配置目标')
-  create.action(async ({ session, options = {} as Record<string, any> }, title, start, end, description) => {
-    if (!session || !isAdministrator(session, normalizedConfig)) return '只有在管理员白名单中的四级及以上用户可以管理活动。'
-    try {
-      const activity = await service.create({ title, startAt: start, endAt: end, description, status: parseStatus(options.status), location: options.location, link: options.link }, Boolean(options.broadcast))
-      return `活动创建成功：\n${formatActivity(activity)}`
-    } catch (error) {
-      return error instanceof Error ? error.message : String(error)
-    }
+  const denied = '只有显式管理员 QQ 或 authority 4 用户可在管理位置管理活动。'
+  const admin = (command: string, description: string, handler: (meta: any, ...args: any[]) => Promise<string>) => ctx.command(command, description).action(async (meta, ...args) => {
+    if (!meta.session || !isAdministrator(meta.session, normalizedConfig)) return denied
+    try { return await handler(meta, ...args) } catch (error) { return error instanceof Error ? error.message : String(error) }
   })
+  const prompt = async (session: any, label: string, optional = false) => {
+    await session.send(label + (optional ? '（发送 - 跳过）' : ''))
+    const value = (await session.prompt(300000))?.trim()
+    if (!value) throw new Error('操作已超时或输入为空。')
+    return optional && value === '-' ? '' : value
+  }
+  const choice = async (session: any, preview: Activity) => {
+    await session.send(formatActivity(preview) + '\n请选择“仅保存”或“保存并通知”；其他输入取消。')
+    const value = (await session.prompt(300000))?.trim()
+    if (value === '仅保存') return false
+    if (value === '保存并通知') return true
+    throw new Error('操作已取消。')
+  }
 
-  const update = ctx.command('activity.update <id:posint>', '更新活动')
-    .option('title', '-t <title:string> 新标题')
-    .option('start', '-s <start:string> 开始时间')
-    .option('end', '-e <end:string> 结束时间')
-    .option('status', '-S <status:string> 活动状态')
-    .option('location', '-l <location:string> 活动地点')
-    .option('description', '-d <description:text> 活动描述')
-    .option('link', '-u <link:string> 参考链接')
-    .option('broadcast', '-b 广播给已配置目标')
-  update.action(async ({ session, options = {} as Record<string, any> }, id) => {
-    if (!session || !isAdministrator(session, normalizedConfig)) return '只有在管理员白名单中的四级及以上用户可以管理活动。'
-    try {
-      const activity = await service.update(id, { title: options.title, startAt: options.start, endAt: options.end, status: parseStatus(options.status), location: options.location, description: options.description, link: options.link }, Boolean(options.broadcast))
-      return `活动更新成功：\n${formatActivity(activity)}`
-    } catch (error) {
-      return error instanceof Error ? error.message : String(error)
-    }
+  admin('activity.history', '查看已结束或已取消的活动', async () => {
+    const activities = await service.history()
+    return activities.length ? activities.map(formatActivity).join('\n\n') : '暂无历史活动。'
   })
-
-  const cancel = ctx.command('activity.cancel <id:posint>', '取消活动')
-  cancel.action(async ({ session }, id) => {
-    if (!session || !isAdministrator(session, normalizedConfig)) return '只有在管理员白名单中的四级及以上用户可以管理活动。'
-    try {
-      const activity = await service.cancel(id)
-      return `活动已取消：${activity.title}`
-    } catch (error) {
-      return error instanceof Error ? error.message : String(error)
+  admin('activity.add', '引导新增活动并选择是否通知', async ({ session }) => {
+    const input: ActivityInput = {
+      title: await prompt(session, '请输入活动标题。'),
+      startAt: await prompt(session, '请输入开始时间。'),
+      endAt: await prompt(session, '请输入结束时间。'),
+      location: await prompt(session, '请输入地点。', true),
+      link: await prompt(session, '请输入参考链接。', true),
+      description: await prompt(session, '请输入活动描述。', true),
     }
+    const preview = { ...validateActivity(input), id: 0, createdAt: new Date(), updatedAt: new Date() } as Activity
+    const broadcast = await choice(session, preview)
+    return '活动创建成功：\n' + formatActivity(await service.create(input, broadcast))
+  })
+  admin('activity.edit <id:posint>', '引导选择并编辑活动字段', async ({ session }, id) => {
+    const current = await service.get(Number(id))
+    if (!current) throw new Error('活动不存在')
+    const fields = (await prompt(session, formatActivity(current) + '\n请输入要修改的字段，用逗号分隔：标题、开始、结束、地点、链接、描述。')).split(/[,，]/).map((item: string) => item.trim())
+    const patch: ActivityPatch = {}
+    for (const field of fields) {
+      if (field === '标题') patch.title = await prompt(session, '请输入新标题。')
+      else if (field === '开始') patch.startAt = await prompt(session, '请输入新开始时间。')
+      else if (field === '结束') patch.endAt = await prompt(session, '请输入新结束时间。')
+      else if (field === '地点') patch.location = await prompt(session, '请输入新地点。', true)
+      else if (field === '链接') patch.link = await prompt(session, '请输入新链接。', true)
+      else if (field === '描述') patch.description = await prompt(session, '请输入新描述。', true)
+      else throw new Error(`未知字段：${field}`)
+    }
+    const merged = { ...current, ...validateActivity({ ...current, ...patch }) } as Activity
+    const broadcast = await choice(session, merged)
+    return '活动更新成功：\n' + formatActivity(await service.update(Number(id), patch, broadcast))
+  })
+  admin('activity.cancel <id:posint>', '预览并取消活动，选择是否通知', async ({ session }, id) => {
+    const current = await service.get(Number(id))
+    if (!current) throw new Error('活动不存在')
+    const preview = { ...current, status: 'cancelled' as const }
+    const broadcast = await choice(session, preview)
+    return '活动已取消：\n' + formatActivity(await service.cancel(Number(id), broadcast))
   })
 }
 
-export default { name, Config, apply }
+export default { name, inject, Config, apply }

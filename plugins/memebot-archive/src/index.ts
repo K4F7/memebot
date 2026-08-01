@@ -1,24 +1,25 @@
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
-import { Context, Schema } from 'koishi'
+import { dirname, join, resolve, sep } from 'node:path'
+import { Context, h, Schema } from 'koishi'
 
 export const name = 'memebot-archive'
+export const inject = ['database', 'console']
 
 export interface Config {
-  adminUserIds: string[]
-  adminGroupIds: string[]
-  minAuthority: number
+  administrators: Array<{ qq: string }>
+  managementGroups: Array<{ qq: string }>
   localPath: string
-  r2Binding?: string
+  paperMaxMb: number
 }
 
+const qqTable = () => Schema.array(Schema.object({ qq: Schema.string().description('QQ 号') }))
+
 export const Config: Schema<Config> = Schema.object({
-  adminUserIds: Schema.array(String).default([]).description('管理员用户 ID 白名单'),
-  adminGroupIds: Schema.array(String).default([]).description('管理员群组 ID 白名单'),
-  minAuthority: Schema.number().default(4).description('最低 Koishi authority'),
+  administrators: qqTable().default([]).description('显式授权的管理员 QQ'),
+  managementGroups: qqTable().default([]).description('允许执行管理动作的 QQ 群'),
   localPath: Schema.string().default('data/memebot-archive').description('附件本地存储目录'),
-  r2Binding: Schema.string().default('archiveBucket').description('可选的 R2 binding 名称'),
+  paperMaxMb: Schema.number().default(100).min(1).description('Paper PDF 最大大小（MB）'),
 })
 
 export interface Attachment {
@@ -31,12 +32,15 @@ export interface Attachment {
 
 export interface NewspaperIssue {
   id: string
+  issueNumber: string
   month: string
   title: string
   description?: string
   sourceLink?: string
   attachment?: Attachment
   publishedAt: Date
+  updatedAt?: Date
+  lifecycle?: 'active' | 'removed'
 }
 
 export interface Work {
@@ -55,9 +59,74 @@ export interface ArchiveDatabase {
   works: Work[]
 }
 
+declare module 'koishi' {
+  interface Tables {
+    archivePaper: {
+      id: string
+      issueNumber: string
+      month: string
+      title: string
+      description: string
+      sourceLink: string
+      attachment: string
+      lifecycle: 'active' | 'removed'
+      publishedAt: Date
+      updatedAt: Date
+    }
+    archiveSequence: { kind: string; value: number }
+  }
+}
+
+export interface ArchiveMetadataRepository {
+  loadPapers(): Promise<NewspaperIssue[]>
+  nextPaperId(): Promise<string>
+  createPaper(paper: NewspaperIssue): Promise<void>
+  updatePaper(paper: NewspaperIssue): Promise<void>
+}
+
+export class KoishiArchiveMetadataRepository implements ArchiveMetadataRepository {
+  constructor(private readonly ctx: Context) {}
+  async loadPapers() {
+    const rows = await this.ctx.model.get('archivePaper', {}) as unknown as Array<Record<string, unknown>>
+    return rows.map(row => ({
+      id: String(row.id), issueNumber: String(row.issueNumber), month: String(row.month), title: String(row.title),
+      description: String(row.description || '') || undefined, sourceLink: String(row.sourceLink || '') || undefined,
+      attachment: row.attachment ? JSON.parse(String(row.attachment)) : undefined,
+      lifecycle: (row.lifecycle || 'active') as 'active' | 'removed',
+      publishedAt: new Date(row.publishedAt as string | number), updatedAt: new Date(row.updatedAt as string | number),
+    }))
+  }
+  async nextPaperId() {
+    const rows = await this.ctx.model.get('archiveSequence', { kind: 'paper' }) as unknown as Array<{ value: number }>
+    const value = (rows[0]?.value ?? 0) + 1
+    if (rows[0]) await this.ctx.model.set('archiveSequence', { kind: 'paper' }, { value })
+    else await this.ctx.model.create('archiveSequence', { kind: 'paper', value })
+    return `P${value}`
+  }
+  async createPaper(paper: NewspaperIssue) {
+    const now = paper.updatedAt ?? paper.publishedAt
+    await this.ctx.model.create('archivePaper', {
+      id: paper.id, issueNumber: paper.issueNumber, month: paper.month, title: paper.title,
+      description: paper.description ?? '', sourceLink: paper.sourceLink ?? '', attachment: JSON.stringify(paper.attachment),
+      lifecycle: paper.lifecycle ?? 'active', publishedAt: paper.publishedAt, updatedAt: now,
+    })
+  }
+  async updatePaper(paper: NewspaperIssue) {
+    await this.ctx.model.set('archivePaper', { id: paper.id }, {
+      issueNumber: paper.issueNumber, month: paper.month, title: paper.title,
+      description: paper.description ?? '', sourceLink: paper.sourceLink ?? '', attachment: JSON.stringify(paper.attachment),
+      lifecycle: paper.lifecycle ?? 'active', updatedAt: paper.updatedAt ?? new Date(),
+    })
+  }
+}
+
 export interface R2Store {
   put(key: string, data: Uint8Array, contentType?: string): Promise<void>
   get(key: string): Promise<Uint8Array | undefined>
+}
+
+export interface ArchiveBackupQueue {
+  enqueue(attachment: Attachment): Promise<void>
 }
 
 export interface MessageSender {
@@ -82,6 +151,7 @@ export interface AttachmentInput {
 
 export interface IssueInput {
   month: string
+  issueNumber: string
   title: string
   description?: string
   sourceLink?: string
@@ -97,6 +167,28 @@ export interface WorkInput {
   attachment?: AttachmentInput
 }
 
+function validatePaperMetadata(input: Pick<IssueInput, 'title' | 'issueNumber' | 'month' | 'description' | 'sourceLink'>) {
+  const title = input.title?.trim()
+  const issueNumber = input.issueNumber?.trim()
+  if (!title) throw new Error('Paper 标题不能为空')
+  if (!issueNumber) throw new Error('Paper 期号不能为空')
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(input.month)) throw new Error('Paper 出刊月份必须使用 YYYY-MM')
+  const sourceLink = input.sourceLink?.trim()
+  if (sourceLink && !/^https?:\/\//i.test(sourceLink)) throw new Error('Paper 来源链接必须以 http:// 或 https:// 开头')
+  return { title, issueNumber, month: input.month, description: input.description?.trim() || undefined, sourceLink: sourceLink || undefined }
+}
+
+function validatePdfAttachment(input: AttachmentInput, maxMb: number) {
+  const type = input.contentType?.toLowerCase()
+  if ((type && type !== 'application/pdf') || !input.filename.toLowerCase().endsWith('.pdf')) throw new Error('Newspaper Issue attachment must be a PDF')
+  const data = typeof input.data === 'string' ? new TextEncoder().encode(input.data) : input.data
+  const header = new TextDecoder().decode(data.slice(0, 8))
+  const trailer = new TextDecoder().decode(data.slice(Math.max(0, data.byteLength - 1024)))
+  if (!header.startsWith('%PDF-') || !trailer.includes('%%EOF')) throw new Error('Paper attachment is not a valid PDF')
+  if (data.byteLength > maxMb * 1024 * 1024) throw new Error(`Paper PDF 大小超过 ${maxMb} MB 限制`)
+  return data
+}
+
 export class MemoryR2Store implements R2Store {
   readonly objects = new Map<string, Uint8Array>()
   async put(key: string, data: Uint8Array) { this.objects.set(key, data) }
@@ -110,7 +202,7 @@ export class LocalAttachmentStore {
     const data = typeof input.data === 'string' ? new TextEncoder().encode(input.data) : input.data
     const safeName = input.filename.replace(/[^a-zA-Z0-9._-]/g, '_')
     const relativePath = join(id, safeName).replaceAll('\\', '/')
-    const fullPath = join(this.root, relativePath)
+    const fullPath = this.fullPath(relativePath)
     await mkdir(dirname(fullPath), { recursive: true })
     await writeFile(fullPath, data)
     const checksum = createHash('sha256').update(data).digest('hex')
@@ -118,17 +210,16 @@ export class LocalAttachmentStore {
       relativePath, contentType: input.contentType ?? 'application/octet-stream', size: data.byteLength, checksum,
       r2: this.r2 ? { objectKey: `memebot-archive/${relativePath}`, syncState: 'pending' } : undefined,
     }
-    if (this.r2) await this.sync(attachment, data)
     return attachment
   }
 
   async read(attachment: Attachment): Promise<Uint8Array> {
-    try { return new Uint8Array(await readFile(join(this.root, attachment.relativePath))) } catch (error) {
+    try { return new Uint8Array(await readFile(this.fullPath(attachment.relativePath))) } catch (error) {
       if (!this.r2) throw error
       const data = await this.r2.get(attachment.r2?.objectKey ?? `memebot-archive/${attachment.relativePath}`)
       if (!data) throw error
-      await mkdir(dirname(join(this.root, attachment.relativePath)), { recursive: true })
-      await writeFile(join(this.root, attachment.relativePath), data)
+      await mkdir(dirname(this.fullPath(attachment.relativePath)), { recursive: true })
+      await writeFile(this.fullPath(attachment.relativePath), data)
       return data
     }
   }
@@ -137,7 +228,7 @@ export class LocalAttachmentStore {
     if (!this.r2 || !attachment.r2) return attachment
     attachment.r2.lastAttempt = new Date().toISOString()
     try {
-      data ??= new Uint8Array(await readFile(join(this.root, attachment.relativePath)))
+      data ??= new Uint8Array(await readFile(this.fullPath(attachment.relativePath)))
       await this.r2.put(attachment.r2.objectKey, data, attachment.contentType)
       attachment.r2.syncState = 'synced'
       delete attachment.r2.error
@@ -147,51 +238,70 @@ export class LocalAttachmentStore {
     }
     return attachment
   }
+  private fullPath(relativePath: string) {
+    const root = resolve(this.root)
+    const target = resolve(root, relativePath)
+    if (target !== root && !target.startsWith(root + sep)) throw new Error('unsafe attachment path')
+    return target
+  }
+}
+
+export class ImmediateArchiveBackupQueue implements ArchiveBackupQueue {
+  constructor(private readonly local: LocalAttachmentStore) {}
+  async enqueue(attachment: Attachment) { await this.local.sync(attachment) }
 }
 
 export class ArchiveService {
   readonly db: ArchiveDatabase
   readonly local: LocalAttachmentStore
   readonly config: Config
-  private sequence = 0
+  private paperSequence = 0
+  private workSequence = 0
+  private readonly metadata?: ArchiveMetadataRepository
+  private readonly backupQueue?: ArchiveBackupQueue
   readonly fallbackEvents: Array<{ id: string; kind: 'issue' | 'work'; reason: string }> = []
 
-  constructor(options: { config?: Partial<Config>; db?: Partial<ArchiveDatabase>; local?: LocalAttachmentStore; r2?: R2Store }) {
-    this.config = { adminUserIds: [], adminGroupIds: [], minAuthority: 4, localPath: 'data/memebot-archive', ...options.config }
+  constructor(options: { config?: Partial<Config>; db?: Partial<ArchiveDatabase>; local?: LocalAttachmentStore; r2?: R2Store; metadata?: ArchiveMetadataRepository; backupQueue?: ArchiveBackupQueue }) {
+    this.config = { administrators: [], managementGroups: [], localPath: 'data/memebot-archive', paperMaxMb: 100, ...options.config }
     this.db = { issues: options.db?.issues ?? [], works: options.db?.works ?? [] }
     this.local = options.local ?? new LocalAttachmentStore(this.config.localPath, options.r2)
+    this.metadata = options.metadata
+    this.backupQueue = options.backupQueue ?? (options.r2 ? new ImmediateArchiveBackupQueue(this.local) : undefined)
+  }
+
+  async initialize() {
+    if (!this.metadata) return
+    this.db.issues.splice(0, this.db.issues.length, ...await this.metadata.loadPapers())
   }
 
   isAdmin(session: ArchiveSession): boolean {
-    if ((session.authority ?? 0) < this.config.minAuthority) return false
-    const users = this.config.adminUserIds
-    const groups = this.config.adminGroupIds
-    if (!users.length && !groups.length) return true
-    return (!!session.userId && users.includes(session.userId)) || (!!session.guildId && groups.includes(session.guildId))
+    const identity = (session.authority ?? 0) >= 4 || (!!session.userId && this.config.administrators.some(item => item.qq === session.userId))
+    const location = !session.guildId || !this.config.managementGroups.length || this.config.managementGroups.some(item => item.qq === session.guildId)
+    return identity && location
   }
 
-  private id(prefix: string) { this.sequence += 1; return `${prefix}-${Date.now().toString(36)}-${this.sequence.toString(36)}` }
+  private id(prefix: 'P' | 'W') { return prefix === 'P' ? `P${++this.paperSequence}` : `W${++this.workSequence}` }
   previewIssue(input: IssueInput) { return { ...input, kind: 'Newspaper Issue' as const, preview: true } }
   previewWork(input: WorkInput) { return { ...input, kind: 'Work' as const, preview: true } }
 
   async publishIssue(session: ArchiveSession, input: IssueInput): Promise<NewspaperIssue> {
     this.requireAdmin(session)
+    const validated = validatePaperMetadata(input)
     if (!input.attachment) throw new Error('Newspaper Issue PDF attachment required')
-    const type = input.attachment.contentType?.toLowerCase()
-    if ((type && type !== 'application/pdf') || !input.attachment.filename.toLowerCase().endsWith('.pdf')) {
-      throw new Error('Newspaper Issue attachment must be a PDF')
-    }
-    const id = this.id('issue')
-    const { attachment: attachmentInput, ...metadata } = input
-    const issue: NewspaperIssue = { id, ...metadata, publishedAt: new Date() }
+    validatePdfAttachment(input.attachment, this.config.paperMaxMb)
+    const id = this.metadata ? await this.metadata.nextPaperId() : this.id('P')
+    const attachmentInput = input.attachment
+    const issue: NewspaperIssue = { id, ...validated, publishedAt: new Date(), updatedAt: new Date(), lifecycle: 'active' }
     if (attachmentInput) issue.attachment = await this.local.save(id, attachmentInput)
+    if (issue.attachment && this.backupQueue) await this.backupQueue.enqueue(issue.attachment)
+    if (this.metadata) await this.metadata.createPaper(issue)
     this.db.issues.push(issue)
     return issue
   }
 
   async publishWork(session: ArchiveSession, input: WorkInput): Promise<Work> {
     this.requireAdmin(session)
-    const id = this.id('work')
+    const id = this.id('W')
     const { attachment: attachmentInput, ...metadata } = input
     const work: Work = { id, ...metadata, publishedAt: new Date() }
     if (attachmentInput) work.attachment = await this.local.save(id, attachmentInput)
@@ -199,11 +309,24 @@ export class ArchiveService {
     return work
   }
 
-  updateIssue(session: ArchiveSession, id: string, patch: Partial<Omit<IssueInput, 'attachment'>>, confirmation?: string) {
+  async updateIssue(session: ArchiveSession, id: string, patch: Partial<Omit<IssueInput, 'attachment'>>, confirmation?: string) {
     this.requireConfirmation(session, confirmation)
-    const issue = this.db.issues.find(item => item.id === id)
+    const issue = this.getIssue(id)
     if (!issue) throw new Error('Newspaper Issue not found')
-    Object.assign(issue, patch)
+    Object.assign(issue, validatePaperMetadata({ ...issue, ...patch }))
+    issue.updatedAt = new Date()
+    if (this.metadata) await this.metadata.updatePaper(issue)
+    return issue
+  }
+  async replaceIssueAttachment(session: ArchiveSession, id: string, attachmentInput: AttachmentInput) {
+    this.requireAdmin(session)
+    const issue = this.getIssue(id)
+    if (!issue) throw new Error('Newspaper Issue not found')
+    validatePdfAttachment(attachmentInput, this.config.paperMaxMb)
+    issue.attachment = await this.local.save(issue.id, attachmentInput)
+    if (this.backupQueue) await this.backupQueue.enqueue(issue.attachment)
+    issue.updatedAt = new Date()
+    if (this.metadata) await this.metadata.updatePaper(issue)
     return issue
   }
   updateWork(session: ArchiveSession, id: string, patch: Partial<Omit<WorkInput, 'attachment'>>, confirmation?: string) {
@@ -213,11 +336,22 @@ export class ArchiveService {
     Object.assign(work, patch)
     return work
   }
-  removeIssue(session: ArchiveSession, id: string, confirmation?: string) { this.requireConfirmation(session, confirmation); return this.remove(this.db.issues, id, 'Newspaper Issue') }
+  async removeIssue(session: ArchiveSession, id: string, confirmation?: string) {
+    this.requireConfirmation(session, confirmation)
+    const issue = this.getIssue(id)
+    if (!issue) throw new Error('Newspaper Issue not found')
+    issue.lifecycle = 'removed'; issue.updatedAt = new Date()
+    if (this.metadata) await this.metadata.updatePaper(issue)
+    return issue
+  }
   removeWork(session: ArchiveSession, id: string, confirmation?: string) { this.requireConfirmation(session, confirmation); return this.remove(this.db.works, id, 'Work') }
 
-  listIssues(month?: string) { return this.db.issues.filter(item => !month || item.month === month).sort((a, b) => b.month.localeCompare(a.month) || b.title.localeCompare(a.title)) }
-  getIssue(id: string) { return this.db.issues.find(item => item.id === id) }
+  listIssues(month?: string) { return this.db.issues.filter(item => item.lifecycle !== 'removed' && (!month || item.month === month)).sort((a, b) => b.month.localeCompare(a.month) || b.title.localeCompare(a.title)) }
+  searchIssues(query?: string) {
+    const text = query?.trim().toLocaleLowerCase()
+    return this.listIssues().filter(item => !text || `${item.month} ${item.issueNumber} ${item.title} ${item.description ?? ''}`.toLocaleLowerCase().includes(text))
+  }
+  getIssue(id: string) { return this.db.issues.find(item => item.id.localeCompare(id, undefined, { sensitivity: 'base' }) === 0 && item.lifecycle !== 'removed') }
   getWork(id: string) { return this.db.works.find(item => item.id === id) }
   searchWorks(filters: { month?: string; author?: string; text?: string } = {}) {
     const text = filters.text?.toLocaleLowerCase()
@@ -226,7 +360,7 @@ export class ArchiveService {
 
   async retryPending() {
     for (const item of [...this.db.issues, ...this.db.works]) {
-      if (item.attachment?.r2 && item.attachment.r2.syncState !== 'synced') await this.local.sync(item.attachment)
+      if (item.attachment?.r2 && item.attachment.r2.syncState !== 'synced') await (this.backupQueue?.enqueue(item.attachment) ?? this.local.sync(item.attachment))
     }
   }
   async recover(item: NewspaperIssue | Work) { return item.attachment ? this.local.read(item.attachment) : undefined }
@@ -259,11 +393,126 @@ function payload(value: string | undefined): any {
   try { return JSON.parse(value) } catch { throw new Error('元数据必须是合法 JSON。') }
 }
 
+function decodeConsoleAttachment(input: AttachmentInput): AttachmentInput {
+  if (typeof input.data !== 'string' || !input.data.startsWith('data:')) return input
+  const match = /^data:([^;,]+)?;base64,(.*)$/s.exec(input.data)
+  if (!match) throw new Error('上传内容必须是 base64 data URL。')
+  return { ...input, contentType: input.contentType || match[1] || 'application/octet-stream', data: new Uint8Array(Buffer.from(match[2], 'base64')) }
+}
+
+export class ArchiveConsoleFeatures {
+  constructor(private readonly ctx: Context, private readonly service: ArchiveService, private readonly ready: Promise<void>) {}
+  register() {
+    const consoleService = (this.ctx as any).console
+    if (!consoleService?.addListener) return
+    consoleService.addEntry?.({ dev: resolve(__dirname, '../client/index.ts'), prod: resolve(__dirname, '../dist') })
+    consoleService.addListener('memebot/archive/status', async () => {
+      try { await this.ready; return { state: 'ready' } } catch (error) { return { state: 'unavailable', error: error instanceof Error ? error.message : String(error) } }
+    })
+    consoleService.addListener('memebot/archive/papers', async (query?: string) => { await this.ready; return this.service.searchIssues(query) })
+    consoleService.addListener('memebot/archive/paper/create', async (input: IssueInput) => {
+      await this.ready
+      return this.service.publishIssue({ authority: 4 }, { ...input, attachment: input.attachment && decodeConsoleAttachment(input.attachment) })
+    }, { authority: 4 })
+    consoleService.addListener('memebot/archive/paper/edit', async (id: string, patch: Partial<IssueInput>) => { await this.ready; return this.service.updateIssue({ authority: 4 }, id, patch, 'Y') }, { authority: 4 })
+    consoleService.addListener('memebot/archive/paper/upload', async (id: string, attachment: AttachmentInput) => {
+      await this.ready
+      return this.service.replaceIssueAttachment({ authority: 4 }, id, decodeConsoleAttachment(attachment))
+    }, { authority: 4 })
+    const attachment = async (id: string) => {
+      await this.ready
+      const paper = this.service.getIssue(id)
+      if (!paper?.attachment) throw new Error('Paper 不存在或没有附件')
+      const data = await this.service.recover(paper)
+      return { filename: paper.attachment.relativePath.split('/').pop(), contentType: paper.attachment.contentType, data: Buffer.from(data!).toString('base64') }
+    }
+    consoleService.addListener('memebot/archive/paper/preview', attachment)
+    consoleService.addListener('memebot/archive/paper/download', attachment)
+  }
+}
+
 export function apply(ctx: Context, config: Config) {
-  const service = new ArchiveService({ config })
+  ctx.model.extend('archivePaper', {
+    id: 'string', issueNumber: 'string', month: 'string', title: 'string', description: 'text', sourceLink: 'string', attachment: 'text', lifecycle: 'string', publishedAt: 'timestamp', updatedAt: 'timestamp',
+  }, { primary: 'id' })
+  ctx.model.extend('archiveSequence', { kind: 'string', value: 'unsigned' }, { primary: 'kind' })
+  const service = new ArchiveService({ config, metadata: new KoishiArchiveMetadataRepository(ctx) })
+  const ready = service.initialize()
+  new ArchiveConsoleFeatures(ctx, service, ready).register()
   ;(ctx as any).archive = service
-  const root = ctx.command('archive', '月度报纸与作品归档')
-  root.subcommand('.issues [month:text]', '按月份浏览 Newspaper Issue').action(async ({ session }, month) => {
+  const root = ctx.command('archive [id:text]', '搜索或获取 Paper 归档')
+  root.action(async ({ session }, id) => {
+    await ready
+    if (!id) return '请使用 /archive search paper [查询]，或 /archive P编号。'
+    const paper = service.getIssue(id)
+    if (!paper) return 'Paper 不存在。'
+    const detail = `${paper.id} ${paper.month} 第${paper.issueNumber}期 ${paper.title}\n${paper.description ?? ''}`.trim()
+    if (!paper.attachment) return detail
+    const data = await service.recover(paper)
+    const filename = paper.attachment.relativePath.split('/').pop() || `${paper.id}.pdf`
+    const url = `data:${paper.attachment.contentType};base64,${Buffer.from(data!).toString('base64')}`
+    await session?.send(detail)
+    return h.file(url, { filename })
+  })
+  root.subcommand('.search paper [query:text]', '按月份、期号、标题或描述搜索 Paper').action(async (_meta, query) => {
+    await ready
+    const items = service.searchIssues(query)
+    return items.length ? items.map(item => `${item.id} ${item.month} 第${item.issueNumber}期 ${item.title}`).join('\n') : '没有找到 Paper。'
+  })
+  const guidedPrompt = async (session: any, label: string, optional = false) => {
+    await session.send(label + (optional ? '（发送 - 跳过）' : ''))
+    const value = (await session.prompt(300000))?.trim()
+    if (!value) throw new Error('操作已超时或输入为空。')
+    return optional && value === '-' ? '' : value
+  }
+  root.subcommand('.publish.paper', '引导发布一个 Paper PDF').action(async ({ session }) => {
+    await ready
+    if (!session) return '无法识别当前会话。'
+    const archiveSession = commandSession(session)
+    service.requireAdmin(archiveSession)
+    try {
+      const title = await guidedPrompt(session, '请输入 Paper 标题。')
+      const issueNumber = await guidedPrompt(session, '请输入期号。')
+      const month = await guidedPrompt(session, '请输入出刊月份（YYYY-MM）。')
+      const description = await guidedPrompt(session, '请输入描述。', true)
+      const sourceLink = await guidedPrompt(session, '请输入来源链接。', true)
+      await session.send('请发送一个 PDF 附件；也可发送 PDF 下载地址。')
+      const uploadSession = await session.prompt((incoming: any) => incoming, { timeout: 300000 })
+      if (!uploadSession) throw new Error('等待 PDF 已超时。')
+      const element = (uploadSession.elements || []).find((item: any) => item.type === 'file')
+      const pdfUrl = element?.attrs?.src || element?.attrs?.url || String(uploadSession.content || '').trim()
+      if (!pdfUrl) throw new Error('没有收到 PDF 附件或下载地址。')
+      const response = await fetch(pdfUrl)
+      if (!response.ok) throw new Error(`PDF 下载失败：${response.status}`)
+      const input: IssueInput = {
+        title, issueNumber, month, description: description || undefined, sourceLink: sourceLink || undefined,
+        attachment: { filename: element?.attrs?.filename || element?.attrs?.title || `${title}.pdf`, contentType: element?.attrs?.mime || response.headers.get('content-type') || 'application/pdf', data: new Uint8Array(await response.arrayBuffer()) },
+      }
+      await session.send(`Paper 预览\n标题：${title}\n期号：${issueNumber}\n月份：${month}\n请发送“确认”发布，其他输入取消。`)
+      if ((await session.prompt(300000))?.trim() !== '确认') return '已取消发布。'
+      const paper = await service.publishIssue(archiveSession, input)
+      return `已发布 Paper ${paper.id}。`
+    } catch (error) { return error instanceof Error ? error.message : String(error) }
+  })
+  root.subcommand('.edit.paper <id:string>', '引导编辑 Paper 元数据').action(async ({ session }, id) => {
+    await ready
+    if (!session) return '无法识别当前会话。'
+    const archiveSession = commandSession(session)
+    service.requireAdmin(archiveSession)
+    const paper = service.getIssue(id)
+    if (!paper) return 'Paper 不存在。'
+    const field = await guidedPrompt(session, `当前：${paper.title} ${paper.issueNumber} ${paper.month}\n请选择字段：标题、期号、月份、描述、来源。`)
+    const map: Record<string, keyof Pick<IssueInput, 'title' | 'issueNumber' | 'month' | 'description' | 'sourceLink'>> = { 标题: 'title', 期号: 'issueNumber', 月份: 'month', 描述: 'description', 来源: 'sourceLink' }
+    const key = map[field]
+    if (!key) return '未知字段。'
+    const value = await guidedPrompt(session, '请输入新值。', key === 'description' || key === 'sourceLink')
+    await session.send(`将 ${field} 修改为：${value || '（空）'}\n请发送“确认”继续。`)
+    if ((await session.prompt(300000))?.trim() !== '确认') return '已取消编辑。'
+    const updated = await service.updateIssue(archiveSession, id, { [key]: value }, 'Y')
+    return `已更新 Paper ${updated.id}。`
+  })
+  root.subcommand('.issues [month:text]', '按月份浏览 Paper').action(async (_meta, month) => {
+    await ready
     const items = service.listIssues(month)
     return items.length ? items.map(item => `${item.id} ${item.month} ${item.title}`).join('\n') : '没有找到 Newspaper Issue。'
   })
@@ -284,6 +533,7 @@ export function apply(ctx: Context, config: Config) {
     return JSON.stringify(service.previewWork(payload(metadata)))
   })
   root.subcommand('.issue-publish <metadata:text>', '发布 Newspaper Issue').action(async ({ session }, metadata) => {
+    await ready
     const item = await service.publishIssue(commandSession(session), payload(metadata))
     return `已发布 Newspaper Issue ${item.id}。`
   })
@@ -291,14 +541,14 @@ export function apply(ctx: Context, config: Config) {
     const item = await service.publishWork(commandSession(session), payload(metadata))
     return `已发布 Work ${item.id}。`
   })
-  root.subcommand('.issue-edit <id:string> <confirmation:string> <patch:text>', '编辑 Newspaper Issue 元数据').action(({ session }, id, confirmation, patch) => {
-    return `已更新 Newspaper Issue ${service.updateIssue(commandSession(session), id, payload(patch), confirmation).id}。`
+  root.subcommand('.issue-edit <id:string> <confirmation:string> <patch:text>', '编辑 Newspaper Issue 元数据').action(async ({ session }, id, confirmation, patch) => {
+    return `已更新 Newspaper Issue ${(await service.updateIssue(commandSession(session), id, payload(patch), confirmation)).id}。`
   })
   root.subcommand('.work-edit <id:string> <confirmation:string> <patch:text>', '编辑 Work 元数据').action(({ session }, id, confirmation, patch) => {
     return `已更新 Work ${service.updateWork(commandSession(session), id, payload(patch), confirmation).id}。`
   })
-  root.subcommand('.issue-remove <id:string> <confirmation:string>', '删除 Newspaper Issue').action(({ session }, id, confirmation) => {
-    service.removeIssue(commandSession(session), id, confirmation)
+  root.subcommand('.issue-remove <id:string> <confirmation:string>', '删除 Newspaper Issue').action(async ({ session }, id, confirmation) => {
+    await service.removeIssue(commandSession(session), id, confirmation)
     return `已删除 Newspaper Issue ${id}。`
   })
   root.subcommand('.work-remove <id:string> <confirmation:string>', '删除 Work').action(({ session }, id, confirmation) => {
@@ -309,4 +559,4 @@ export function apply(ctx: Context, config: Config) {
   return service
 }
 
-export default { name, Config, apply }
+export default { name, inject, Config, apply }
