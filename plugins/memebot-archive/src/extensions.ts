@@ -82,7 +82,7 @@ interface QueueModel {
 }
 interface QueueContext { model: QueueModel }
 interface QueueLocal { read(attachment: ExtensionAttachment): Promise<Uint8Array> }
-export interface BackupContext { recordKind: 'paper' | 'work'; recordId: string; manifest: Record<string, unknown> }
+export interface BackupContext { recordKind: 'paper' | 'work'; recordId: string; manifest: unknown }
 export interface BackupStatusSink { update(kind: 'paper' | 'work', id: string, state: 'pending' | 'failed' | 'complete', error?: string): Promise<void> }
 interface BackupJob {
   id: string
@@ -112,10 +112,9 @@ export class PersistentArchiveBackupQueue {
     if (!context) throw new Error('backup context required')
     const id = createHash('sha256').update(`${context.recordKind}\0${context.recordId}\0${attachment.relativePath}`).digest('hex')
     const existing = await this.ctx.model.get('archiveBackupJob', { id })
-    if (!existing[0]) await this.ctx.model.create('archiveBackupJob', {
-      id, recordKind: context.recordKind, recordId: context.recordId, attachment: JSON.stringify(attachment), manifest: JSON.stringify(context.manifest),
-      state: 'pending', attempts: 0, nextAttemptAt: this.now(), error: '',
-    })
+    const data = { recordKind: context.recordKind, recordId: context.recordId, attachment: JSON.stringify(attachment), manifest: JSON.stringify(context.manifest), state: 'pending', attempts: 0, nextAttemptAt: this.now(), error: '' }
+    if (!existing[0]) await this.ctx.model.create('archiveBackupJob', { id, ...data })
+    else await this.ctx.model.set('archiveBackupJob', { id }, data)
     attachment.r2 ??= { objectKey: attachment.relativePath, syncState: 'pending' }
     await this.sink.update(context.recordKind, context.recordId, 'pending')
   }
@@ -142,7 +141,8 @@ export class PersistentArchiveBackupQueue {
   private async run(job: BackupJob) {
     const attachment = JSON.parse(job.attachment) as ExtensionAttachment
     const objectKey = attachment.r2?.objectKey ?? attachment.relativePath
-    const prefix = objectKey.includes('/') ? objectKey.slice(0, objectKey.indexOf('/')) : ''
+    const suffix = `/${attachment.relativePath}`
+    const prefix = objectKey.endsWith(suffix) ? objectKey.slice(0, -suffix.length) : objectKey.includes('/') ? objectKey.slice(0, objectKey.lastIndexOf('/')) : ''
     const manifestKey = `${prefix ? `${prefix}/` : ''}manifests/${job.recordKind}/${job.recordId}.json`
     try {
       await this.r2.put(objectKey, await this.local.read(attachment), attachment.contentType)

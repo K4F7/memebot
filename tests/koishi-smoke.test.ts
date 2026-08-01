@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
 import activity from '../plugins/memebot-activity/src'
-import archive, { type ArchiveSession } from '../plugins/memebot-archive/src'
+import archive, { ArchiveService, type ArchiveSession } from '../plugins/memebot-archive/src'
 import faq from '../plugins/memebot-faq/src'
 import intake from '../plugins/memebot-intake/src'
 import { createDeliveryCapture, createKoishiTestHarness, qqQuotedCommand, type KoishiTestHarness } from './koishi'
@@ -49,6 +49,23 @@ describe('standalone plugin command smoke behaviors', () => {
     await expect(client.receive('archive.issues')).resolves.toEqual([
       '没有找到 Newspaper Issue。',
     ])
+  })
+
+  it('navigates Publication Appearances and related search through a Mock session', async () => {
+    const harness = await createKoishiTestHarness(archive, {})
+    harnesses.push(harness)
+    const service = harness.pluginResult as ArchiveService
+    const client = await harness.client({ userId: '10002', channelId: '20001' })
+    await client.receive('archive.issues')
+    service.db.issues.push({ id: 'P1', issueNumber: '1', month: '2026-08', title: 'Issue', publishedAt: new Date(), lifecycle: 'active' })
+    service.db.works.push({ id: 'W1', title: 'Work', author: 'Alice', description: 'Related description', publishedAt: new Date(), lifecycle: 'active' })
+    await service.associateWork({ authority: 4 }, 'P1', { workId: 'W1', page: '3', section: 'Features', displayOrder: 1 })
+    expect(service.searchIssues('Alice').map(item => item.id)).toEqual(['P1'])
+
+    await expect(client.receive('archive.search paper Alice')).resolves.toEqual([expect.stringContaining('P1 2026-08 第1期 Issue')])
+    await expect(client.receive('archive.search works Related')).resolves.toEqual([expect.stringContaining('W1 Alice - Work')])
+    await expect(client.receive('archive P1')).resolves.toEqual([expect.stringContaining('W1 Alice - Work · 第3页 · Features')])
+    await expect(service.associateWork({ authority: 1 }, 'P1', { workId: 'W1' })).rejects.toThrow('permission')
   })
 
   it('represents QQ-style IDs and quoted messages at the Mock boundary', async () => {

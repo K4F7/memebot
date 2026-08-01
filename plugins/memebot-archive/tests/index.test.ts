@@ -37,10 +37,12 @@ describe('archive integration paths', () => {
     expect(entries).toHaveLength(1)
     expect(listeners).toEqual(expect.arrayContaining([
       'memebot/archive/papers', 'memebot/archive/paper/create', 'memebot/archive/paper/upload',
-      'memebot/archive/paper/preview', 'memebot/archive/paper/edit', 'memebot/archive/paper/download',
+      'memebot/archive/paper/preview', 'memebot/archive/paper/edit', 'memebot/archive/paper/download', 'memebot/archive/paper/details',
       'memebot/archive/status', 'memebot/archive/recheck', 'memebot/archive/backup/retry',
       'memebot/archive/works', 'memebot/archive/work/create', 'memebot/archive/work/upload',
-      'memebot/archive/work/tree', 'memebot/archive/work/preview', 'memebot/archive/work/download',
+      'memebot/archive/work/tree', 'memebot/archive/work/preview', 'memebot/archive/work/download', 'memebot/archive/work/details',
+      'memebot/archive/appearance/save', 'memebot/archive/appearance/remove',
+      'memebot/archive/restore/preview', 'memebot/archive/restore/apply', 'memebot/archive/restore/history',
     ]))
   })
   it('keeps R2 failures retryable and eventually syncs', async () => {
@@ -77,6 +79,13 @@ describe('archive integration paths', () => {
     })
     await unlink(join(root, issue.attachment!.relativePath))
     expect(Array.from(await service.recover(issue))).toEqual(Array.from(new TextEncoder().encode('%PDF-1.7\n%%EOF')))
+  })
+
+  it('rejects a corrupt R2 fallback without caching it locally', async () => {
+    const root = await tempRoot(); const r2 = new MemoryR2Store(); const service = new ArchiveService({ config: { localPath: root }, r2 })
+    const issue = await service.publishIssue(admin, { month: '2026-08', issueNumber: '8', title: 'August', attachment: { filename: 'august.pdf', contentType: 'application/pdf', data: '%PDF-1.7\n%%EOF' } })
+    await unlink(join(root, issue.attachment!.relativePath)); r2.objects.set(issue.attachment!.r2!.objectKey, new TextEncoder().encode('corrupt'))
+    await expect(service.recover(issue)).rejects.toThrow('checksum')
   })
 
   it('falls back from forward delivery to ordinary delivery', async () => {

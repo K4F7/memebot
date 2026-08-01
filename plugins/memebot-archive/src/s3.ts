@@ -1,4 +1,4 @@
-import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
+import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
 import type { R2Store } from './index'
 
 export interface S3R2Config {
@@ -32,5 +32,15 @@ export class S3R2Store implements R2Store {
   }
   async delete(key: string) {
     await this.client.send(new DeleteObjectCommand({ Bucket: this.config.bucketName, Key: key }))
+  }
+  async list(prefix: string) {
+    const keys: string[] = []
+    let continuationToken: string | undefined
+    do {
+      const response = await this.client.send(new ListObjectsV2Command({ Bucket: this.config.bucketName, Prefix: prefix, ContinuationToken: continuationToken }))
+      keys.push(...(response.Contents ?? []).flatMap(item => item.Key ? [item.Key] : []))
+      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined
+    } while (continuationToken)
+    return keys.sort()
   }
 }

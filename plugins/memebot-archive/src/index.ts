@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 import { Context, h, Schema } from 'koishi'
 import { ArchivePreflight, BackupContext, BackupStatusSink, PersistentArchiveBackupQueue, WorkPreviewStore } from './extensions'
@@ -80,9 +80,54 @@ export interface Work {
   backupError?: string
 }
 
+export interface PublicationAppearance {
+  paperId: string
+  workId: string
+  page?: string
+  section?: string
+  displayOrder: number
+  createdAt: Date
+  updatedAt: Date
+}
+
+export type ArchiveRecordKind = 'paper' | 'work'
+
+export interface ArchiveManifest {
+  schemaVersion: 1
+  recordKind: ArchiveRecordKind
+  sequence: number
+  record: NewspaperIssue | Work
+  appearances: PublicationAppearance[]
+}
+
+export interface RestoreSelection {
+  recordKind: ArchiveRecordKind
+  recordId: string
+  decision: 'local' | 'r2'
+}
+
+export interface RestorePreviewEntry {
+  recordKind: ArchiveRecordKind
+  recordId: string
+  status: 'new' | 'unchanged' | 'changed' | 'conflicting'
+  missingAttachment: boolean
+  local?: NewspaperIssue | Work
+  remote: NewspaperIssue | Work
+}
+
+export interface RestoreAuditEntry {
+  id: string
+  actor: string
+  action: 'preview' | 'restore'
+  result: 'complete' | 'failed'
+  details: string
+  createdAt: Date
+}
+
 export interface ArchiveDatabase {
   issues: NewspaperIssue[]
   works: Work[]
+  appearances: PublicationAppearance[]
 }
 
 declare module 'koishi' {
@@ -125,6 +170,23 @@ declare module 'koishi' {
       nextAttemptAt: Date
       error: string
     }
+    archivePublicationAppearance: {
+      paperId: string
+      workId: string
+      page: string
+      section: string
+      displayOrder: number
+      createdAt: Date
+      updatedAt: Date
+    }
+    archiveRestoreAudit: {
+      id: string
+      actor: string
+      action: 'preview' | 'restore'
+      result: 'complete' | 'failed'
+      details: string
+      createdAt: Date
+    }
   }
 }
 
@@ -138,6 +200,13 @@ export interface ArchiveMetadataRepository {
   createWork(work: Work): Promise<void>
   updateWork(work: Work): Promise<void>
   updateBackupState(kind: 'paper' | 'work', id: string, state: 'pending' | 'failed' | 'complete', error?: string): Promise<void>
+  loadAppearances(): Promise<PublicationAppearance[]>
+  upsertAppearance(appearance: PublicationAppearance): Promise<void>
+  removeAppearance(paperId: string, workId: string): Promise<void>
+  importRecord(kind: ArchiveRecordKind, item: NewspaperIssue | Work, manifest: ArchiveManifest): Promise<void>
+  importRecords(records: Array<{ kind: ArchiveRecordKind; item: NewspaperIssue | Work; manifest: ArchiveManifest }>): Promise<void>
+  appendRestoreAudit(entry: RestoreAuditEntry): Promise<void>
+  loadRestoreAudit(): Promise<RestoreAuditEntry[]>
 }
 
 export class KoishiArchiveMetadataRepository implements ArchiveMetadataRepository {
@@ -207,12 +276,78 @@ export class KoishiArchiveMetadataRepository implements ArchiveMetadataRepositor
     const table = kind === 'paper' ? 'archivePaper' : 'archiveWork'
     await this.ctx.model.set(table, { id }, { backupState: state, backupError: error ?? '', updatedAt: new Date() } as any)
   }
+  async loadAppearances() {
+    const rows = await this.ctx.model.get('archivePublicationAppearance', {}) as unknown as Array<Record<string, unknown>>
+    return rows.map(row => ({
+      paperId: String(row.paperId), workId: String(row.workId), page: String(row.page || '') || undefined, section: String(row.section || '') || undefined,
+      displayOrder: Number(row.displayOrder || 0), createdAt: new Date(row.createdAt as string | number), updatedAt: new Date(row.updatedAt as string | number),
+    }))
+  }
+  async upsertAppearance(appearance: PublicationAppearance) {
+    const query = { paperId: appearance.paperId, workId: appearance.workId }
+    const rows = await this.ctx.model.get('archivePublicationAppearance', query) as unknown[]
+    const data = { page: appearance.page ?? '', section: appearance.section ?? '', displayOrder: appearance.displayOrder, updatedAt: appearance.updatedAt }
+    if (rows[0]) await this.ctx.model.set('archivePublicationAppearance', query, data)
+    else await this.ctx.model.create('archivePublicationAppearance', { ...query, ...data, createdAt: appearance.createdAt })
+  }
+  async removeAppearance(paperId: string, workId: string) {
+    await this.ctx.model.remove('archivePublicationAppearance', { paperId, workId })
+  }
+  async importRecord(kind: ArchiveRecordKind, item: NewspaperIssue | Work, manifest: ArchiveManifest) {
+    const existing = kind === 'paper'
+      ? await this.ctx.model.get('archivePaper', { id: item.id })
+      : await this.ctx.model.get('archiveWork', { id: item.id })
+    const restored = { ...item, backupState: 'complete' as const, backupError: undefined }
+    if (kind === 'paper') {
+      if (existing[0]) await this.updatePaper(restored as NewspaperIssue)
+      else await this.createPaper(restored as NewspaperIssue)
+    } else if (existing[0]) await this.updateWork(restored as Work)
+    else await this.createWork(restored as Work)
+    const sequenceKind = kind === 'paper' ? 'paper' : 'work'
+    const sequences = await this.ctx.model.get('archiveSequence', { kind: sequenceKind }) as unknown as Array<{ value: number }>
+    if (!sequences[0]) await this.ctx.model.create('archiveSequence', { kind: sequenceKind, value: manifest.sequence })
+    else if (sequences[0].value < manifest.sequence) await this.ctx.model.set('archiveSequence', { kind: sequenceKind }, { value: manifest.sequence })
+    const attachment = restored.attachment
+    if (attachment) {
+      const id = createHash('sha256').update(`${kind}\0${item.id}\0${attachment.relativePath}`).digest('hex')
+      const job = await this.ctx.model.get('archiveBackupJob', { id }) as unknown[]
+      const data = { recordKind: kind, recordId: item.id, attachment: JSON.stringify(attachment), manifest: JSON.stringify(manifest), state: 'complete' as const, attempts: 0, nextAttemptAt: new Date(), error: '' }
+      if (job[0]) await this.ctx.model.set('archiveBackupJob', { id }, data)
+      else await this.ctx.model.create('archiveBackupJob', { id, ...data })
+    }
+  }
+  async importRecords(records: Array<{ kind: ArchiveRecordKind; item: NewspaperIssue | Work; manifest: ArchiveManifest }>) {
+    const importInto = async (repository: KoishiArchiveMetadataRepository) => {
+      for (const record of records) await repository.importRecord(record.kind, record.item, record.manifest)
+      const appearances = new Map<string, PublicationAppearance>()
+      for (const record of records) for (const appearance of record.manifest.appearances) appearances.set(`${appearance.paperId}:${appearance.workId}`, appearance)
+      for (const appearance of appearances.values()) {
+        const [papers, works] = await Promise.all([repository.ctx.model.get('archivePaper', { id: appearance.paperId }), repository.ctx.model.get('archiveWork', { id: appearance.workId })])
+        if (papers[0] && works[0]) await repository.upsertAppearance(appearance)
+      }
+    }
+    const database = (this.ctx as any).database
+    if (database?.withTransaction) {
+      await database.withTransaction(async (transaction: any) => {
+        const repository = new KoishiArchiveMetadataRepository({ model: transaction } as Context)
+        await importInto(repository)
+      })
+      return
+    }
+    await importInto(this)
+  }
+  async appendRestoreAudit(entry: RestoreAuditEntry) { await this.ctx.model.create('archiveRestoreAudit', { ...entry }) }
+  async loadRestoreAudit() {
+    const rows = await this.ctx.model.get('archiveRestoreAudit', {}) as unknown as RestoreAuditEntry[]
+    return rows.map(row => ({ ...row, createdAt: new Date(row.createdAt) })).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
+  }
 }
 
 export interface R2Store {
   put(key: string, data: Uint8Array, contentType?: string): Promise<void>
   get(key: string): Promise<Uint8Array | undefined>
   delete(key: string): Promise<void>
+  list?(prefix: string): Promise<string[]>
 }
 
 export interface ArchiveBackupQueue {
@@ -258,6 +393,14 @@ export interface WorkInput {
   attachment?: AttachmentInput
 }
 
+export interface AppearanceInput {
+  workId?: string
+  work?: WorkInput
+  page?: string
+  section?: string
+  displayOrder?: number
+}
+
 function validatePaperMetadata(input: Pick<IssueInput, 'title' | 'issueNumber' | 'month' | 'description' | 'sourceLink'>) {
   const title = input.title?.trim()
   const issueNumber = input.issueNumber?.trim()
@@ -301,6 +444,7 @@ export class MemoryR2Store implements R2Store {
   async put(key: string, data: Uint8Array) { this.objects.set(key, data) }
   async get(key: string) { return this.objects.get(key) }
   async delete(key: string) { this.objects.delete(key) }
+  async list(prefix: string) { return [...this.objects.keys()].filter(key => key.startsWith(prefix)).sort() }
 }
 
 export class LocalAttachmentStore {
@@ -326,9 +470,47 @@ export class LocalAttachmentStore {
       if (!this.r2) throw error
       const data = await this.r2.get(attachment.r2?.objectKey ?? `memebot-archive/${attachment.relativePath}`)
       if (!data) throw error
-      await mkdir(dirname(this.fullPath(attachment.relativePath)), { recursive: true })
-      await writeFile(this.fullPath(attachment.relativePath), data)
+      if (createHash('sha256').update(data).digest('hex') !== attachment.checksum) throw new Error(`R2 attachment checksum mismatch: ${attachment.relativePath}`)
+      await this.restore(attachment, data)
       return data
+    }
+  }
+
+  async exists(attachment: Attachment) {
+    try { await access(this.fullPath(attachment.relativePath)); return true } catch { return false }
+  }
+
+  async restore(attachment: Attachment, data: Uint8Array) {
+    const checksum = createHash('sha256').update(data).digest('hex')
+    if (checksum !== attachment.checksum) throw new Error(`attachment checksum mismatch: ${attachment.relativePath}`)
+    const target = this.fullPath(attachment.relativePath)
+    await mkdir(dirname(target), { recursive: true })
+    const temporary = `${target}.restore-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    await writeFile(temporary, data)
+    await rename(temporary, target)
+  }
+
+  async stageRestore(attachment: Attachment, data: Uint8Array) {
+    const checksum = createHash('sha256').update(data).digest('hex')
+    if (checksum !== attachment.checksum) throw new Error(`attachment checksum mismatch: ${attachment.relativePath}`)
+    const target = this.fullPath(attachment.relativePath)
+    await mkdir(dirname(target), { recursive: true })
+    const nonce = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    const temporary = `${target}.restore-${nonce}`; const backup = `${target}.restore-backup-${nonce}`
+    await writeFile(temporary, data)
+    let original = false; let committed = false
+    return {
+      commit: async () => {
+        original = await this.fileExists(target)
+        if (original) await rename(target, backup)
+        try { await rename(temporary, target); committed = true } catch (error) { if (original) await rename(backup, target).catch(() => undefined); throw error }
+      },
+      rollback: async () => {
+        if (committed) await unlink(target).catch(() => undefined)
+        else await unlink(temporary).catch(() => undefined)
+        if (original) await rename(backup, target).catch(() => undefined)
+      },
+      finish: async () => { await unlink(temporary).catch(() => undefined); await unlink(backup).catch(() => undefined) },
     }
   }
 
@@ -352,6 +534,7 @@ export class LocalAttachmentStore {
     if (target !== root && !target.startsWith(root + sep)) throw new Error('unsafe attachment path')
     return target
   }
+  private async fileExists(path: string) { try { await access(path); return true } catch { return false } }
 }
 
 export class ImmediateArchiveBackupQueue implements ArchiveBackupQueue {
@@ -365,8 +548,10 @@ export class ArchiveService {
   readonly config: Config
   private paperSequence = 0
   private workSequence = 0
+  private restoreAuditSequence = 0
   private readonly metadata?: ArchiveMetadataRepository
   private readonly backupQueue?: ArchiveBackupQueue
+  private readonly r2?: R2Store
   readonly previews: WorkPreviewStore
   readonly fallbackEvents: Array<{ id: string; kind: 'issue' | 'work'; reason: string }> = []
 
@@ -376,20 +561,22 @@ export class ArchiveService {
       r2: { enabled: false, accountId: '', bucketName: '', accessKeyId: '', secretAccessKey: '', objectPrefix: 'memebot-archive' },
       ...options.config,
     }
-    this.db = { issues: options.db?.issues ?? [], works: options.db?.works ?? [] }
+    this.db = { issues: options.db?.issues ?? [], works: options.db?.works ?? [], appearances: options.db?.appearances ?? [] }
     this.local = options.local ?? new LocalAttachmentStore(this.config.localPath, options.r2, this.config.r2.objectPrefix)
     this.previews = options.previews ?? new WorkPreviewStore(join(this.config.localPath, '.previews'))
     this.metadata = options.metadata
+    this.r2 = options.r2
     this.backupQueue = options.backupQueue ?? (options.r2 ? new ImmediateArchiveBackupQueue(this.local) : undefined)
   }
 
   async initialize() {
     if (!this.metadata) return
-    const [papers, works] = await Promise.all([this.metadata.loadPapers(), this.metadata.loadWorks()])
+    const [papers, works, appearances] = await Promise.all([this.metadata.loadPapers(), this.metadata.loadWorks(), this.metadata.loadAppearances()])
     const addedPapers = this.db.issues.filter(item => !papers.some(paper => paper.id === item.id))
     const addedWorks = this.db.works.filter(item => !works.some(work => work.id === item.id))
     this.db.issues.splice(0, this.db.issues.length, ...papers, ...addedPapers)
     this.db.works.splice(0, this.db.works.length, ...works, ...addedWorks)
+    this.db.appearances.splice(0, this.db.appearances.length, ...appearances)
   }
 
   isAdmin(session: ArchiveSession): boolean {
@@ -414,7 +601,7 @@ export class ArchiveService {
     if (this.metadata) await this.metadata.createPaper(issue)
     this.db.issues.push(issue)
     if (issue.attachment && this.backupQueue) {
-      await this.backupQueue.enqueue(issue.attachment, { recordKind: 'paper', recordId: issue.id, manifest: this.manifest(issue) })
+      await this.backupQueue.enqueue(issue.attachment, { recordKind: 'paper', recordId: issue.id, manifest: this.manifest('paper', issue) })
       if (this.backupQueue.runDue) void this.backupQueue.runDue()
     }
     return issue
@@ -432,7 +619,7 @@ export class ArchiveService {
     if (this.metadata) await this.metadata.createWork(work)
     this.db.works.push(work)
     if (this.backupQueue) {
-      await this.backupQueue.enqueue(work.attachment, { recordKind: 'work', recordId: work.id, manifest: this.manifest(work) })
+      await this.backupQueue.enqueue(work.attachment, { recordKind: 'work', recordId: work.id, manifest: this.manifest('work', work) })
       if (this.backupQueue.runDue) void this.backupQueue.runDue()
     }
     return work
@@ -444,7 +631,9 @@ export class ArchiveService {
     if (!issue) throw new Error('Newspaper Issue not found')
     Object.assign(issue, validatePaperMetadata({ ...issue, ...patch }))
     issue.updatedAt = new Date()
+    if (issue.attachment && this.backupQueue) issue.backupState = 'pending'
     if (this.metadata) await this.metadata.updatePaper(issue)
+    if (issue.attachment && this.backupQueue) await this.enqueueBackup('paper', issue)
     return issue
   }
   async replaceIssueAttachment(session: ArchiveSession, id: string, attachmentInput: AttachmentInput) {
@@ -453,9 +642,9 @@ export class ArchiveService {
     if (!issue) throw new Error('Newspaper Issue not found')
     validatePdfAttachment(attachmentInput, this.config.paperMaxMb)
     issue.attachment = await this.local.save(issue.id, attachmentInput)
-    if (this.backupQueue) await this.backupQueue.enqueue(issue.attachment)
-    issue.updatedAt = new Date()
+    issue.updatedAt = new Date(); issue.backupState = this.backupQueue ? 'pending' : 'disabled'; delete issue.backupError
     if (this.metadata) await this.metadata.updatePaper(issue)
+    if (this.backupQueue) await this.enqueueBackup('paper', issue)
     return issue
   }
   async updateWork(session: ArchiveSession, id: string, patch: Partial<Omit<WorkInput, 'attachment'>>, confirmation?: string) {
@@ -464,7 +653,9 @@ export class ArchiveService {
     if (!work) throw new Error('Work not found')
     Object.assign(work, validateWorkMetadata({ ...work, ...patch }))
     work.updatedAt = new Date()
+    if (work.attachment && this.backupQueue) work.backupState = 'pending'
     if (this.metadata) await this.metadata.updateWork(work)
+    if (work.attachment && this.backupQueue) await this.enqueueBackup('work', work)
     return work
   }
   async replaceWorkAttachment(session: ArchiveSession, id: string, attachmentInput: AttachmentInput) {
@@ -476,7 +667,7 @@ export class ArchiveService {
     work.attachment = await this.local.save(work.id, { ...attachmentInput, data })
     work.updatedAt = new Date(); work.backupState = this.backupQueue ? 'pending' : 'disabled'; delete work.backupError
     if (this.metadata) await this.metadata.updateWork(work)
-    if (this.backupQueue) { await this.backupQueue.enqueue(work.attachment, { recordKind: 'work', recordId: work.id, manifest: this.manifest(work) }); if (this.backupQueue.runDue) void this.backupQueue.runDue() }
+    if (this.backupQueue) await this.enqueueBackup('work', work)
     return work
   }
   async removeIssue(session: ArchiveSession, id: string, confirmation?: string) {
@@ -492,7 +683,11 @@ export class ArchiveService {
   listIssues(month?: string) { return this.db.issues.filter(item => item.lifecycle !== 'removed' && (!month || item.month === month)).sort((a, b) => b.month.localeCompare(a.month) || b.title.localeCompare(a.title)) }
   searchIssues(query?: string) {
     const text = query?.trim().toLocaleLowerCase()
-    return this.listIssues().filter(item => !text || `${item.month} ${item.issueNumber} ${item.title} ${item.description ?? ''}`.toLocaleLowerCase().includes(text))
+    return this.listIssues().filter(item => {
+      if (!text) return true
+      const related = this.getPaperDetails(item.id)?.works.map(entry => `${entry.work.title} ${entry.work.author} ${entry.work.description ?? ''}`).join(' ') ?? ''
+      return `${item.month} ${item.issueNumber} ${item.title} ${item.description ?? ''} ${related}`.toLocaleLowerCase().includes(text)
+    })
   }
   getIssue(id: string) { return this.db.issues.find(item => item.id.localeCompare(id, undefined, { sensitivity: 'base' }) === 0 && item.lifecycle !== 'removed') }
   getWork(id: string) { return this.db.works.find(item => item.id.localeCompare(id, undefined, { sensitivity: 'base' }) === 0 && item.lifecycle !== 'removed') }
@@ -501,10 +696,266 @@ export class ArchiveService {
     return this.db.works.filter(item => item.lifecycle !== 'removed' && (!filters.author || item.author.localeCompare(filters.author, undefined, { sensitivity: 'base' }) === 0) && (!text || `${item.title} ${item.author} ${item.description ?? ''}`.toLocaleLowerCase().includes(text))).sort((a, b) => a.author.localeCompare(b.author, undefined, { sensitivity: 'base' }) || a.title.localeCompare(b.title))
   }
 
+  async associateWork(session: ArchiveSession, paperId: string, input: AppearanceInput) {
+    this.requireAdmin(session)
+    const paper = this.getIssue(paperId)
+    if (!paper) throw new Error('Paper not found')
+    if (!!input.workId === !!input.work) throw new Error('请选择现有 Work 或创建一个完整新 Work')
+    const work = input.work ? await this.publishWork(session, input.work) : this.getWork(input.workId!)
+    if (!work) throw new Error('Work not found')
+    const existing = this.db.appearances.find(item => item.paperId === paper.id && item.workId === work.id)
+    const now = new Date()
+    const displayOrder = input.displayOrder ?? existing?.displayOrder ?? (Math.max(0, ...this.db.appearances.filter(item => item.paperId === paper.id).map(item => item.displayOrder)) + 1)
+    if (!Number.isSafeInteger(displayOrder) || displayOrder < 0) throw new Error('displayOrder 必须是非负整数')
+    const appearance: PublicationAppearance = {
+      paperId: paper.id, workId: work.id, page: input.page?.trim() || undefined, section: input.section?.trim() || undefined,
+      displayOrder, createdAt: existing?.createdAt ?? now, updatedAt: now,
+    }
+    if (existing) Object.assign(existing, appearance)
+    else this.db.appearances.push(appearance)
+    if (this.metadata) await this.metadata.upsertAppearance(appearance)
+    if (paper.attachment && this.backupQueue) await this.enqueueBackup('paper', paper)
+    if (work.attachment && this.backupQueue) await this.enqueueBackup('work', work)
+    return appearance
+  }
+
+  async removeAppearance(session: ArchiveSession, paperId: string, workId: string) {
+    this.requireAdmin(session)
+    const index = this.db.appearances.findIndex(item => item.paperId === paperId && item.workId === workId)
+    if (index < 0) throw new Error('Publication Appearance not found')
+    this.db.appearances.splice(index, 1)
+    if (this.metadata) await this.metadata.removeAppearance(paperId, workId)
+    const paper = this.getIssue(paperId); const work = this.getWork(workId)
+    if (paper?.attachment && this.backupQueue) await this.enqueueBackup('paper', paper)
+    if (work?.attachment && this.backupQueue) await this.enqueueBackup('work', work)
+  }
+
+  getPaperDetails(id: string) {
+    const paper = this.getIssue(id)
+    if (!paper) return undefined
+    const works = this.db.appearances
+      .filter(item => item.paperId === paper.id)
+      .map(appearance => ({ appearance, work: this.getWork(appearance.workId) }))
+      .filter((item): item is { appearance: PublicationAppearance; work: Work } => !!item.work)
+      .sort((a, b) => a.appearance.displayOrder - b.appearance.displayOrder || a.work.id.localeCompare(b.work.id))
+      .map(({ appearance, work }) => ({ work, page: appearance.page, section: appearance.section, displayOrder: appearance.displayOrder }))
+    return { paper, works }
+  }
+
+  getWorkDetails(id: string) {
+    const work = this.getWork(id)
+    if (!work) return undefined
+    const papers = this.db.appearances
+      .filter(item => item.workId === work.id)
+      .map(appearance => ({ appearance, paper: this.getIssue(appearance.paperId) }))
+      .filter((item): item is { appearance: PublicationAppearance; paper: NewspaperIssue } => !!item.paper)
+      .sort((a, b) => b.paper.month.localeCompare(a.paper.month) || a.appearance.displayOrder - b.appearance.displayOrder || a.paper.id.localeCompare(b.paper.id))
+      .map(({ appearance, paper }) => ({ paper, page: appearance.page, section: appearance.section, displayOrder: appearance.displayOrder }))
+    return { work, papers }
+  }
+
+  paperDetailText(id: string) {
+    const details = this.getPaperDetails(id)
+    if (!details) return undefined
+    const related = details.works.map(item => `- ${item.work.id} ${item.work.author} - ${item.work.title}${item.page ? ` · 第${item.page}页` : ''}${item.section ? ` · ${item.section}` : ''}`)
+    return [`${details.paper.id} ${details.paper.month} 第${details.paper.issueNumber}期 ${details.paper.title}`, details.paper.description ?? '', ...(related.length ? ['收录作品：', ...related] : [])].filter(Boolean).join('\n')
+  }
+
+  workDetailText(id: string) {
+    const details = this.getWorkDetails(id)
+    if (!details) return undefined
+    const related = details.papers.map(item => `- ${item.paper.id} ${item.paper.month} ${item.paper.title}${item.page ? ` · 第${item.page}页` : ''}${item.section ? ` · ${item.section}` : ''}`)
+    return [`${details.work.id} ${details.work.author} - ${details.work.title}`, details.work.description ?? '', ...(related.length ? ['刊载于：', ...related] : [])].filter(Boolean).join('\n')
+  }
+
+  async previewRestore(session: ArchiveSession) {
+    this.requireAdmin(session)
+    const auditBase = { actor: session.userId ?? `authority:${session.authority ?? 0}`, action: 'preview' as const }
+    try {
+      const preview = await this.buildRestorePreview(await this.readRemoteManifests())
+      await this.appendAudit({ ...auditBase, result: 'complete', details: JSON.stringify(preview.counts) })
+      return preview
+    } catch (error) {
+      const message = this.safeError(error)
+      await this.appendAudit({ ...auditBase, result: 'failed', details: message }).catch(() => undefined)
+      throw new Error(message)
+    }
+  }
+
+  private async buildRestorePreview(manifests: ArchiveManifest[]) {
+    const entries: RestorePreviewEntry[] = []
+    for (const manifest of manifests) {
+      const remote = manifest.record
+      const local = manifest.recordKind === 'paper' ? this.db.issues.find(item => item.id === remote.id) : this.db.works.find(item => item.id === remote.id)
+      const missingAttachment = !!remote.attachment && (!local?.attachment || !(await this.local.exists(local.attachment)))
+      let status: RestorePreviewEntry['status'] = 'new'
+      if (local) {
+        const localChecksum = local.attachment?.checksum
+        const remoteChecksum = remote.attachment?.checksum
+        if (localChecksum !== remoteChecksum) status = 'conflicting'
+        else status = this.recordFingerprint(local) === this.recordFingerprint(remote) ? 'unchanged' : 'changed'
+      }
+      entries.push({ recordKind: manifest.recordKind, recordId: remote.id, status, missingAttachment, local, remote })
+    }
+    return {
+      counts: {
+        new: entries.filter(item => item.status === 'new').length,
+        changed: entries.filter(item => item.status === 'changed').length,
+        conflicting: entries.filter(item => item.status === 'conflicting').length,
+        missing: entries.filter(item => item.missingAttachment).length,
+      },
+      entries,
+    }
+  }
+
+  async restoreFromR2(session: ArchiveSession, selections: RestoreSelection[] = []) {
+    this.requireAdmin(session)
+    if (!this.metadata) throw new Error('restore requires persistent archive metadata')
+    const auditBase = { actor: session.userId ?? `authority:${session.authority ?? 0}`, action: 'restore' as const }
+    let staged: Array<Awaited<ReturnType<LocalAttachmentStore['stageRestore']>>> = []
+    let metadataCommitted = false
+    try {
+      const manifests = await this.readRemoteManifests()
+      const preview = await this.buildRestorePreview(manifests)
+      const selected = new Map(selections.map(item => [`${item.recordKind}:${item.recordId}`, item.decision]))
+      const downloads: Array<{ manifest: ArchiveManifest; record: NewspaperIssue | Work; attachment: Attachment; data: Uint8Array; importMetadata: boolean }> = []
+      const decisions: Array<Record<string, unknown>> = []
+      for (const entry of preview.entries) {
+        const key = `${entry.recordKind}:${entry.recordId}`
+        const decision = selected.get(key)
+        if (decision === 'local') { decisions.push({ key, decision: 'local', status: entry.status }); continue }
+        const manifest = manifests.find(item => item.recordKind === entry.recordKind && item.record.id === entry.recordId)!
+        const importRemote = entry.status === 'new' || decision === 'r2'
+        const repairLocal = !importRemote && entry.status !== 'conflicting' && entry.missingAttachment
+        if (!importRemote && !repairLocal) { decisions.push({ key, decision: 'local', status: entry.status }); continue }
+        const remoteAttachment = manifest.record.attachment
+        const targetRecord = importRemote ? manifest.record : entry.local!
+        const targetAttachment = targetRecord.attachment
+        if (!remoteAttachment?.r2?.objectKey || !targetAttachment) throw new Error(`manifest attachment missing recovery location: ${key}`)
+        const data = await this.r2!.get(remoteAttachment.r2.objectKey)
+        if (!data) throw new Error(`R2 attachment missing: ${remoteAttachment.r2.objectKey}`)
+        const checksum = createHash('sha256').update(data).digest('hex')
+        if (checksum !== targetAttachment.checksum) throw new Error(`attachment checksum mismatch: ${key}`)
+        downloads.push({ manifest, record: targetRecord, attachment: targetAttachment, data, importMetadata: importRemote })
+        decisions.push({ key, decision: importRemote ? 'r2' : 'repair-attachment', status: entry.status })
+      }
+      for (const download of downloads) staged.push(await this.local.stageRestore(download.attachment, download.data))
+      for (const item of staged) await item.commit()
+      const imports = downloads.filter(download => download.importMetadata).map(download => ({ kind: download.manifest.recordKind, item: { ...download.record, backupState: 'complete' as const, backupError: undefined }, manifest: download.manifest }))
+      await this.metadata.importRecords(imports)
+      metadataCommitted = true
+      for (const download of downloads) if (download.importMetadata) {
+        const restored = { ...download.record, backupState: 'complete' as const, backupError: undefined }
+        const items = download.manifest.recordKind === 'paper' ? this.db.issues : this.db.works
+        const index = items.findIndex(item => item.id === restored.id)
+        if (index < 0) (items as Array<NewspaperIssue | Work>).push(restored)
+        else (items as Array<NewspaperIssue | Work>)[index] = restored
+      }
+      for (const appearance of imports.flatMap(item => item.manifest.appearances)) {
+        if (!this.db.issues.some(item => item.id === appearance.paperId) || !this.db.works.some(item => item.id === appearance.workId)) continue
+        const existing = this.db.appearances.find(item => item.paperId === appearance.paperId && item.workId === appearance.workId)
+        if (existing) Object.assign(existing, appearance)
+        else this.db.appearances.push(appearance)
+      }
+      await this.appendAudit({ ...auditBase, result: 'complete', details: JSON.stringify(decisions) })
+      await Promise.all(staged.map(item => item.finish()))
+      return { restored: downloads.length, decisions }
+    } catch (error) {
+      if (metadataCommitted) await Promise.all(staged.map(item => item.finish()))
+      else await Promise.all([...staged].reverse().map(item => item.rollback()))
+      const message = this.safeError(error)
+      await this.appendAudit({ ...auditBase, result: 'failed', details: message }).catch(() => undefined)
+      throw new Error(message)
+    }
+  }
+
+  async restoreHistory(session: ArchiveSession) {
+    this.requireAdmin(session)
+    return this.metadata?.loadRestoreAudit() ?? []
+  }
+
+  private async appendAudit(input: Omit<RestoreAuditEntry, 'id' | 'createdAt'>) {
+    if (!this.metadata) return
+    const createdAt = new Date()
+    await this.metadata.appendRestoreAudit({ ...input, id: `${createdAt.getTime()}-${String(++this.restoreAuditSequence).padStart(6, '0')}`, createdAt })
+  }
+
+  private async readRemoteManifests() {
+    try { return await this.readRemoteManifestsUnsafe() } catch (error) { throw new Error(this.safeError(error)) }
+  }
+
+  private async readRemoteManifestsUnsafe() {
+    if (!this.r2?.list) throw new Error('R2 manifest listing is unavailable')
+    const prefix = `${this.config.r2.objectPrefix.replace(/^\/+|\/+$/g, '')}/manifests/`
+    const keys = await this.r2.list(prefix)
+    const manifests: ArchiveManifest[] = []
+    for (const key of keys.filter(key => key.endsWith('.json'))) {
+      const bytes = await this.r2.get(key)
+      if (!bytes) throw new Error(`R2 manifest missing: ${key}`)
+      let raw: any
+      try { raw = JSON.parse(new TextDecoder().decode(bytes)) } catch { throw new Error(`corrupt R2 manifest JSON: ${key}`) }
+      const manifest = this.validateManifest(raw, key)
+      manifests.push(manifest)
+    }
+    return manifests
+  }
+
+  private safeError(error: unknown) {
+    let message = error instanceof Error ? error.message : String(error)
+    for (const secret of [this.config.r2.accessKeyId, this.config.r2.secretAccessKey].filter(Boolean)) message = message.replaceAll(secret, '***')
+    return message
+  }
+
+  private validateManifest(raw: any, key: string): ArchiveManifest {
+    if (raw && raw.schemaVersion == null && typeof raw.id === 'string' && raw.attachment) {
+      const match = /^(.*)\/manifests\/(paper|work)\/([PW]\d+)\.json$/.exec(key)
+      if (match && raw.id === match[3]) {
+        const objectKey = `${match[1]}/${String(raw.attachment.relativePath).replace(/^\/+/, '')}`
+        raw = { schemaVersion: 1, recordKind: match[2], sequence: Number(raw.id.slice(1)), record: { ...raw, attachment: { ...raw.attachment, r2: { objectKey, syncState: 'synced' } } }, appearances: [] }
+      }
+    }
+    if (!raw || raw.schemaVersion !== 1 || !['paper', 'work'].includes(raw.recordKind) || !raw.record || typeof raw.record !== 'object') throw new Error(`unsupported or corrupt R2 manifest: ${key}`)
+    const recordKind = raw.recordKind as ArchiveRecordKind
+    const id = String(raw.record.id ?? '')
+    if (!new RegExp(`^${recordKind === 'paper' ? 'P' : 'W'}[1-9]\\d*$`).test(id)) throw new Error(`invalid record identifier in R2 manifest: ${key}`)
+    if (!key.endsWith(`/manifests/${recordKind}/${id}.json`)) throw new Error(`R2 manifest key does not match record: ${key}`)
+    const attachment = raw.record.attachment
+    if (!attachment || typeof attachment.relativePath !== 'string' || !/^[a-f\d]{64}$/i.test(String(attachment.checksum)) || typeof attachment.r2?.objectKey !== 'string') throw new Error(`invalid attachment in R2 manifest: ${key}`)
+    const common = {
+      ...raw.record, id, attachment: { ...attachment, size: Number(attachment.size), r2: { ...attachment.r2, syncState: 'synced' as const } },
+      publishedAt: new Date(raw.record.publishedAt), updatedAt: new Date(raw.record.updatedAt),
+      lifecycle: raw.record.lifecycle === 'removed' ? 'removed' as const : 'active' as const, backupState: 'complete' as const, backupError: undefined,
+    }
+    if (Number.isNaN(common.publishedAt.getTime()) || Number.isNaN(common.updatedAt.getTime())) throw new Error(`invalid dates in R2 manifest: ${key}`)
+    const appearances = Array.isArray(raw.appearances) ? raw.appearances.map((value: any) => {
+      const paperId = String(value.paperId ?? ''); const workId = String(value.workId ?? ''); const displayOrder = Number(value.displayOrder)
+      if (!/^P[1-9]\d*$/.test(paperId) || !/^W[1-9]\d*$/.test(workId) || !Number.isSafeInteger(displayOrder) || displayOrder < 0) throw new Error(`invalid Publication Appearance in R2 manifest: ${key}`)
+      const createdAt = new Date(value.createdAt); const updatedAt = new Date(value.updatedAt)
+      if (Number.isNaN(createdAt.getTime()) || Number.isNaN(updatedAt.getTime())) throw new Error(`invalid Publication Appearance dates in R2 manifest: ${key}`)
+      return { paperId, workId, page: String(value.page || '') || undefined, section: String(value.section || '') || undefined, displayOrder, createdAt, updatedAt }
+    }) : []
+    const record = recordKind === 'paper'
+      ? ({ ...common, issueNumber: String(raw.record.issueNumber), month: String(raw.record.month), title: String(raw.record.title) } as NewspaperIssue)
+      : ({ ...common, title: String(raw.record.title), author: String(raw.record.author) } as Work)
+    const sequence = Number(raw.sequence)
+    if (!Number.isSafeInteger(sequence) || sequence < 1 || sequence !== Number(id.slice(1))) throw new Error(`invalid sequence in R2 manifest: ${key}`)
+    if (recordKind === 'paper') validatePaperMetadata(record as NewspaperIssue)
+    else validateWorkMetadata(record as Work)
+    return { schemaVersion: 1, recordKind, sequence, record, appearances }
+  }
+
+  private recordFingerprint(item: NewspaperIssue | Work) {
+    const { backupState: _state, backupError: _error, attachment, publishedAt, updatedAt, ...metadata } = item
+    return JSON.stringify({ ...metadata, publishedAt: publishedAt.toISOString(), updatedAt: updatedAt?.toISOString(), attachment: attachment && { relativePath: attachment.relativePath, contentType: attachment.contentType, size: attachment.size, checksum: attachment.checksum } })
+  }
+
   async retryPending() {
     if (this.backupQueue?.retryNow) { await this.backupQueue.retryNow(); return }
     for (const item of [...this.db.issues, ...this.db.works]) {
-      if (item.attachment?.r2 && item.attachment.r2.syncState !== 'synced') await (this.backupQueue?.enqueue(item.attachment) ?? this.local.sync(item.attachment))
+      if (item.attachment?.r2 && item.attachment.r2.syncState !== 'synced') {
+        if (this.backupQueue) await this.enqueueBackup(item.id.startsWith('P') ? 'paper' : 'work', item)
+        else await this.local.sync(item.attachment)
+      }
     }
   }
   async recover(item: NewspaperIssue | Work) { return item.attachment ? this.local.read(item.attachment) : undefined }
@@ -525,9 +976,15 @@ export class ArchiveService {
   requireAdmin(session: ArchiveSession) { if (!this.isAdmin(session)) throw new Error('archive administrator permission required') }
   private requireConfirmation(session: ArchiveSession, confirmation?: string) { this.requireAdmin(session); if (confirmation !== 'Y') throw new Error('confirmation requires exact Y') }
   private remove<T extends { id: string }>(items: T[], id: string, label: string) { const index = items.findIndex(item => item.id === id); if (index < 0) throw new Error(`${label} not found`); return items.splice(index, 1)[0] }
-  private manifest(item: NewspaperIssue | Work) {
-    const { attachment, ...metadata } = item
-    return { ...metadata, attachment: attachment && { relativePath: attachment.relativePath, contentType: attachment.contentType, size: attachment.size, checksum: attachment.checksum } }
+  private async enqueueBackup(kind: ArchiveRecordKind, item: NewspaperIssue | Work) {
+    if (!item.attachment || !this.backupQueue) return
+    await this.backupQueue.enqueue(item.attachment, { recordKind: kind, recordId: item.id, manifest: this.manifest(kind, item) })
+    if (this.backupQueue.runDue) void this.backupQueue.runDue()
+  }
+  private manifest(kind: ArchiveRecordKind, item: NewspaperIssue | Work): ArchiveManifest {
+    const attachment = item.attachment && { ...item.attachment, r2: item.attachment.r2 && { ...item.attachment.r2 } }
+    const appearances = this.db.appearances.filter(appearance => kind === 'paper' ? appearance.paperId === item.id : appearance.workId === item.id).map(appearance => ({ ...appearance }))
+    return { schemaVersion: 1, recordKind: kind, sequence: Number(item.id.slice(1)), record: { ...item, attachment }, appearances }
   }
 }
 
@@ -573,6 +1030,7 @@ export class ArchiveConsoleFeatures {
     consoleService.addListener('memebot/archive/recheck', async () => this.preflight?.check(), { authority: 4 })
     consoleService.addListener('memebot/archive/backup/retry', async (recordId?: string) => { await this.queue?.retryNow?.(recordId); return this.queue?.counts?.() }, { authority: 4 })
     consoleService.addListener('memebot/archive/papers', async (query?: string) => { await this.ready; return this.service.searchIssues(query) })
+    consoleService.addListener('memebot/archive/paper/details', async (id: string) => { await this.ready; return this.service.getPaperDetails(id) })
     consoleService.addListener('memebot/archive/paper/create', async (input: IssueInput) => {
       await this.ready
       return this.service.publishIssue({ authority: 4 }, { ...input, attachment: input.attachment && decodeConsoleAttachment(input.attachment) })
@@ -592,6 +1050,7 @@ export class ArchiveConsoleFeatures {
     consoleService.addListener('memebot/archive/paper/preview', attachment)
     consoleService.addListener('memebot/archive/paper/download', attachment)
     consoleService.addListener('memebot/archive/works', async (query?: string) => { await this.ready; return this.service.searchWorks({ text: query }) })
+    consoleService.addListener('memebot/archive/work/details', async (id: string) => { await this.ready; return this.service.getWorkDetails(id) })
     consoleService.addListener('memebot/archive/work/create', async (input: WorkInput) => {
       await this.ready
       return this.service.publishWork({ authority: 4 }, { ...input, attachment: input.attachment && decodeConsoleAttachment(input.attachment) })
@@ -607,6 +1066,11 @@ export class ArchiveConsoleFeatures {
       const data = await this.service.recover(work)
       return { filename: work.attachment.relativePath.split('/').pop(), contentType: work.attachment.contentType, data: Buffer.from(data!).toString('base64') }
     })
+    consoleService.addListener('memebot/archive/appearance/save', async (paperId: string, input: AppearanceInput) => { await this.ready; return this.service.associateWork({ authority: 4 }, paperId, input.work ? { ...input, work: { ...input.work, attachment: input.work.attachment && decodeConsoleAttachment(input.work.attachment) } } : input) }, { authority: 4 })
+    consoleService.addListener('memebot/archive/appearance/remove', async (paperId: string, workId: string) => { await this.ready; await this.service.removeAppearance({ authority: 4 }, paperId, workId) }, { authority: 4 })
+    consoleService.addListener('memebot/archive/restore/preview', async () => { await this.ready; return this.service.previewRestore({ authority: 4 }) }, { authority: 4 })
+    consoleService.addListener('memebot/archive/restore/apply', async (selections?: RestoreSelection[]) => { await this.ready; return this.service.restoreFromR2({ authority: 4 }, selections) }, { authority: 4 })
+    consoleService.addListener('memebot/archive/restore/history', async () => { await this.ready; return this.service.restoreHistory({ authority: 4 }) }, { authority: 4 })
   }
 }
 
@@ -634,6 +1098,8 @@ export function apply(ctx: Context, config: Config) {
   ctx.model.extend('archiveWork', { id: 'string', title: 'string', author: 'string', description: 'text', attachment: 'text', lifecycle: 'string', backupState: 'string', backupError: 'text', publishedAt: 'timestamp', updatedAt: 'timestamp' }, { primary: 'id' })
   ctx.model.extend('archiveSequence', { kind: 'string', value: 'unsigned' }, { primary: 'kind' })
   ctx.model.extend('archiveBackupJob', { id: 'string', recordKind: 'string', recordId: 'string', attachment: 'text', manifest: 'text', state: 'string', attempts: 'unsigned', nextAttemptAt: 'timestamp', error: 'text' }, { primary: 'id' })
+  ctx.model.extend('archivePublicationAppearance', { paperId: 'string', workId: 'string', page: 'string', section: 'string', displayOrder: 'unsigned', createdAt: 'timestamp', updatedAt: 'timestamp' }, { primary: ['paperId', 'workId'] })
+  ctx.model.extend('archiveRestoreAudit', { id: 'string', actor: 'string', action: 'string', result: 'string', details: 'text', createdAt: 'timestamp' }, { primary: 'id' })
   const metadata = new KoishiArchiveMetadataRepository(ctx)
   const r2 = config.r2.enabled ? new S3R2Store(config.r2) : undefined
   const local = new LocalAttachmentStore(config.localPath, r2, config.r2.objectPrefix)
@@ -644,7 +1110,7 @@ export function apply(ctx: Context, config: Config) {
     if (item) { item.backupState = state; item.backupError = error }
   } }
   const queue = r2 ? new PersistentArchiveBackupQueue(ctx, local, r2, sink) : undefined
-  service = new ArchiveService({ config, metadata, local, backupQueue: queue })
+  service = new ArchiveService({ config, metadata, local, r2, backupQueue: queue })
   const preflight = new ArchivePreflight(config.localPath, r2, [config.r2.accessKeyId, config.r2.secretAccessKey])
   const initialized = service.initialize()
   const ready = Promise.all([initialized, preflight.check()]).then(([, health]) => { if (health.state === 'unavailable') throw new Error(health.stores.local.error || '本地存储不可用') })
@@ -660,12 +1126,12 @@ export function apply(ctx: Context, config: Config) {
       const work = service.getWork(id)
       if (!work?.attachment) return 'Work 不存在。'
       const data = await service.recover(work)
-      await session?.send(`${work.id} ${work.author} - ${work.title}\n${work.description ?? ''}`.trim())
+      await session?.send(service.workDetailText(work.id)!)
       return h.file(`data:${work.attachment.contentType};base64,${Buffer.from(data!).toString('base64')}`, { filename: work.attachment.relativePath.split('/').pop() || `${work.id}.zip` })
     }
     const paper = service.getIssue(id)
     if (!paper) return 'Paper 不存在。'
-    const detail = `${paper.id} ${paper.month} 第${paper.issueNumber}期 ${paper.title}\n${paper.description ?? ''}`.trim()
+    const detail = service.paperDetailText(paper.id)!
     if (!paper.attachment) return detail
     const data = await service.recover(paper)
     const filename = paper.attachment.relativePath.split('/').pop() || `${paper.id}.pdf`
@@ -673,10 +1139,17 @@ export function apply(ctx: Context, config: Config) {
     await session?.send(detail)
     return h.file(url, { filename })
   })
-  root.subcommand('.search paper [query:text]', '按月份、期号、标题或描述搜索 Paper').action(async (_meta, query) => {
+  root.subcommand('.search <kind:string> [query:text]', '搜索 Paper 或 Work').action(async (_meta, kind, query) => {
     await ready
-    const items = service.searchIssues(query)
-    return items.length ? items.map(item => `${item.id} ${item.month} 第${item.issueNumber}期 ${item.title}`).join('\n') : '没有找到 Paper。'
+    if (kind.toLocaleLowerCase() === 'paper') {
+      const items = service.searchIssues(query)
+      return items.length ? items.map(item => `${item.id} ${item.month} 第${item.issueNumber}期 ${item.title}`).join('\n') : '没有找到 Paper。'
+    }
+    if (kind.toLocaleLowerCase() === 'works') {
+      const items = service.searchWorks({ text: query })
+      return items.length ? items.map(item => `${item.id} ${item.author} - ${item.title}`).join('\n') : '没有找到 Work。'
+    }
+    return '请使用 /archive search paper [查询] 或 /archive search works [查询]。'
   })
   const guidedPrompt = async (session: any, label: string, optional = false) => {
     await session.send(label + (optional ? '（发送 - 跳过）' : ''))
@@ -763,10 +1236,6 @@ export function apply(ctx: Context, config: Config) {
     return items.length ? items.map(item => `${item.id} ${item.month} ${item.title}`).join('\n') : '没有找到 Newspaper Issue。'
   })
   root.subcommand('.works [query:text]', '查询 Work').action(async ({ session }, query) => {
-    const items = service.searchWorks({ text: query })
-    return items.length ? items.map(item => `${item.id} ${item.author} - ${item.title}`).join('\n') : '没有找到 Work。'
-  })
-  root.subcommand('.search works [query:text]', '按标题、作者或描述搜索 Work').action(async (_meta, query) => {
     const items = service.searchWorks({ text: query })
     return items.length ? items.map(item => `${item.id} ${item.author} - ${item.title}`).join('\n') : '没有找到 Work。'
   })

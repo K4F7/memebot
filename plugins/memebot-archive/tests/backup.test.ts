@@ -50,7 +50,7 @@ describe('archive preflight and persistent backup', () => {
       async get(key: string) { return objects.get(key) },
       async delete(key: string) { objects.delete(key) },
     }
-    const local = new LocalAttachmentStore(root, r2, 'club')
+    const local = new LocalAttachmentStore(root, r2, 'club/archive')
     const attachment = await local.save('P1', { filename: 'paper.pdf', contentType: 'application/pdf', data: '%PDF-1.7\n%%EOF' })
     const states: string[] = []
     const queue = new PersistentArchiveBackupQueue(ctx, local, r2, { update: async (_kind, _id, state) => { states.push(state) } }, () => now)
@@ -62,8 +62,8 @@ describe('archive preflight and persistent backup', () => {
     const restarted = new PersistentArchiveBackupQueue(ctx, local, r2, { update: async (_kind, _id, state) => { states.push(state) } }, () => now)
     await restarted.runDue()
     expect(await restarted.counts()).toEqual({ pending: 0, failed: 0, complete: 1 })
-    expect(objects.has('club/P1/paper.pdf')).toBe(true)
-    expect(objects.has('club/manifests/paper/P1.json')).toBe(true)
+    expect(objects.has('club/archive/P1/paper.pdf')).toBe(true)
+    expect(objects.has('club/archive/manifests/paper/P1.json')).toBe(true)
     expect(states.at(-1)).toBe('complete')
   })
 
