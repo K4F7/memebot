@@ -1,0 +1,56 @@
+name: Publish plugin
+
+on:
+  push:
+    tags:
+      - "memebot-*-v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+          registry-url: https://registry.npmjs.org
+
+      - run: corepack enable
+      - run: yarn install --immutable
+
+      - name: Resolve plugin from tag
+        id: plugin
+        shell: bash
+        run: |
+          for package_dir in plugins/memebot-*; do
+            plugin="$(basename "$package_dir")"
+            version="$(node -p "require('./${package_dir}/package.json').version")"
+
+            if [[ "$GITHUB_REF_NAME" == "${plugin}-v${version}" ]]; then
+              echo "directory=${package_dir}" >> "$GITHUB_OUTPUT"
+              echo "Publishing ${plugin} ${version}"
+              exit 0
+            fi
+          done
+
+          echo "Tag '${GITHUB_REF_NAME}' does not match a plugin and its package.json version." >&2
+          echo "Expected format: <plugin-directory>-v<version> (for example, memebot-faq-v0.1.0)." >&2
+          exit 1
+
+      - run: yarn typecheck
+      - run: yarn build
+
+      - name: Publish to npm
+        working-directory: ${{ steps.plugin.outputs.directory }}
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
