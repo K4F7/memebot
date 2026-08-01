@@ -20,6 +20,26 @@ An authoritative response maintained by the club for a question. Reusable answer
 
 A proposal to change or improve the club, its activities, publications, or services.
 
+## Feedback
+
+An account of a user's experience, observation, or problem that the club may review and respond to. Unlike a suggestion, feedback does not need to propose a change.
+
+## Intake Draft
+
+Feedback, a suggestion, or a submission being collected from a user but not yet submitted for handling. A draft is not an intake record and has no tracking number or review status.
+
+## Intake Record
+
+Submitted feedback, suggestion, or other intake content tracked under a stable number for administrative handling. Its handling progress is distinct from whether it remains active in the administrators' work queue.
+
+## Intake Identifier
+
+A stable public reference assigned within one intake type when a draft is submitted. It is never reused and remains attached to the record throughout its handling history.
+
+## Intake Assignee
+
+The administrator currently responsible for following up an intake record outside the bot. Assignment acknowledges that the record has been seen but does not itself decide or close the record.
+
 ## Activity
 
 A scheduled club event with a title, time, status, and optional location or reference link. A recent activity is upcoming or currently active, not merely recently published.
@@ -30,8 +50,28 @@ One historical issue of the club newspaper. It has searchable metadata, a PDF pu
 
 ## Work
 
-A historical club or member work that can be searched by metadata and retrieved as an attachment or link.
+A historical club or member work that can be searched by metadata and retrieved as a work package. An external link may supplement but does not replace its package.
+
+## Work Package
+
+The single ZIP archive containing all files that constitute one work. Every work has exactly one valid work package, including works whose content could otherwise fit in one file.
+
+## Publication Appearance
+
+The occurrence of a work in a newspaper issue, optionally identified by a page or section. A work may appear in multiple issues, and an issue may contain multiple works.
+
+## Archive Identifier
+
+A stable public reference assigned to one newspaper issue or work. It remains associated with that item throughout publication, removal, restoration, and retrieval and is never reused.
+
+## Archive Backup
+
+A secondary copy of an archived attachment used for recovery. Failure to create it does not invalidate a successfully stored archive attachment and remains eligible for retry.
 
 ## Help Document
 
 The maintained user-facing guide to the bot's commands and supported workflows. It may be requested explicitly or sent after a poke interaction.
+
+## Plugin Administrator
+
+A QQ user explicitly authorized to manage a plugin or whose Koishi authority is at least 4. A management group limits where management actions may run; membership in that group does not itself grant administrator status.
