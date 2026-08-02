@@ -3,7 +3,7 @@ import { access, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/prom
 import { dirname, join, resolve, sep } from 'node:path'
 import { Context, h, Schema } from 'koishi'
 import type { AccessDecision, AccessSession } from 'koishi-plugin-memebot-access'
-import { ArchivePreflight, BackupContext, BackupStatusSink, PersistentArchiveBackupQueue, PersistentArchiveCleanupQueue, WorkPreviewStore } from './extensions'
+import { ArchiveCleanupJob, ArchivePreflight, BackupContext, BackupStatusSink, PersistentArchiveBackupQueue, PersistentArchiveCleanupQueue, WorkPreviewStore } from './extensions'
 import { S3R2Store } from './s3'
 
 export { ArchivePreflight, PersistentArchiveBackupQueue, PersistentArchiveCleanupQueue, WorkPreviewStore } from './extensions'
@@ -462,6 +462,7 @@ export interface ArchiveCleanupQueue {
   runDue?(): Promise<void>
   retryNow?(recordId?: string): Promise<void>
   counts?(): Promise<{ pending: number; failed: number; complete: number }>
+  list?(recordId?: string): Promise<ArchiveCleanupJob[]>
 }
 
 export interface MessageSender {
@@ -1294,6 +1295,7 @@ export class ArchiveConsoleFeatures {
     private readonly ready: Promise<void>,
     private readonly preflight?: ArchivePreflight,
     private readonly queue?: ArchiveBackupQueue,
+    private readonly cleanupQueue?: ArchiveCleanupQueue,
   ) {}
   register() {
     const consoleService = this.ctx.get('console')
@@ -1312,6 +1314,12 @@ export class ArchiveConsoleFeatures {
     }, authenticated)
     consoleService.addListener('memebot/archive/recheck', async () => this.preflight?.check(), authenticated)
     consoleService.addListener('memebot/archive/backup/retry', async (recordId?: string) => { await this.queue?.retryNow?.(recordId); return this.queue?.counts?.() }, authenticated)
+    const cleanupStatus = async () => ({
+      counts: this.cleanupQueue?.counts ? await this.cleanupQueue.counts() : { pending: 0, failed: 0, complete: 0 },
+      jobs: this.cleanupQueue?.list ? await this.cleanupQueue.list() : [],
+    })
+    consoleService.addListener('memebot/archive/cleanup/status', cleanupStatus, authenticated)
+    consoleService.addListener('memebot/archive/cleanup/retry', async (recordId?: string) => { await this.cleanupQueue?.retryNow?.(recordId); return cleanupStatus() }, authenticated)
     consoleService.addListener('memebot/archive/papers', async (query?: string) => { await this.ready; return this.service.searchIssues(query) }, authenticated)
     consoleService.addListener('memebot/archive/paper/details', async (id: string) => { await this.ready; return this.service.getPaperDetails(id) }, authenticated)
     consoleService.addListener('memebot/archive/paper/create', async (input: IssueInput) => {
@@ -1362,8 +1370,11 @@ export class ArchiveConsoleFeatures {
       return this.service.removeWork(consoleActor, id, confirmation)
     }, authenticated)
     consoleService.addListener('memebot/archive/record/restore', async (id: string) => { await this.ready; return this.service.restoreRecord(consoleActor, id) }, authenticated)
-    consoleService.addListener('memebot/archive/record/purge', async (id: string, confirmation: string) => { await this.ready; return this.service.purgeRecord(consoleActor, id, confirmation) }, authenticated)
-    consoleService.addListener('memebot/archive/record/anonymize', async (id: string, confirmation: string) => { await this.ready; return this.service.anonymizeRecord(consoleActor, id, confirmation) }, authenticated)
+    const requireTypedIdentifier = (id: string, confirmation: string) => {
+      if (confirmation !== id) throw new Error(`请输入完整 Archive Identifier ${id} 以确认。`)
+    }
+    consoleService.addListener('memebot/archive/record/purge', async (id: string, confirmation: string) => { await this.ready; requireTypedIdentifier(id, confirmation); return this.service.purgeRecord(consoleActor, id, 'Y') }, authenticated)
+    consoleService.addListener('memebot/archive/record/anonymize', async (id: string, confirmation: string) => { await this.ready; requireTypedIdentifier(id, confirmation); return this.service.anonymizeRecord(consoleActor, id, 'Y') }, authenticated)
     consoleService.addListener('memebot/archive/attachments/retired', async (recordId?: string) => { await this.ready; return this.service.listRetiredAttachments(consoleActor, recordId) }, authenticated)
     consoleService.addListener('memebot/archive/attachment/restore', async (id: string) => { await this.ready; return this.service.restoreRetiredAttachment(consoleActor, id) }, authenticated)
     consoleService.addListener('memebot/archive/lifecycle/history', async (recordId?: string) => { await this.ready; return this.service.lifecycleHistory(consoleActor, recordId) }, authenticated)
@@ -1416,7 +1427,7 @@ export function apply(ctx: Context, config: Config) {
   const initialized = service.initialize()
   const ready = Promise.all([initialized, preflight.check()]).then(([, health]) => { if (health.state === 'unavailable') throw new Error(health.stores.local.error || '本地存储不可用') })
   void ready.catch(() => undefined)
-  new ArchiveConsoleFeatures(ctx, service, ready, preflight, queue).register()
+  new ArchiveConsoleFeatures(ctx, service, ready, preflight, queue, cleanupQueue).register()
   if (queue) ctx.setInterval(() => { void queue.runDue() }, 60_000)
   if (cleanupQueue) ctx.setInterval(() => { void cleanupQueue.runDue() }, 60_000)
   ctx.setInterval(() => { void service.purgeExpired() }, 60_000)

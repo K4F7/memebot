@@ -84,11 +84,44 @@ describe('Archive removal and recovery lifecycle', () => {
     expect(purged).toMatchObject({ id: 'P1', lifecycle: 'purged', attachment: undefined })
     expect(await local.exists(attachment)).toBe(false)
     expect(await cleanup.counts()).toEqual({ pending: 0, failed: 1, complete: 0 })
+    expect(await cleanup.list()).toEqual([
+      expect.objectContaining({ recordId: 'P1', state: 'failed', attempts: 1, error: 'R2 unavailable' }),
+    ])
+    expect((await cleanup.list())[0].objectKeys).toEqual(expect.arrayContaining([
+      attachment.r2!.objectKey,
+      'memebot-archive/manifests/paper/P1.json',
+    ]))
 
     remoteAvailable = true
     await cleanup.retryNow(paper.id)
     expect(await cleanup.counts()).toEqual({ pending: 0, failed: 0, complete: 1 })
     expect(r2.objects.has(attachment.r2!.objectKey)).toBe(false)
+  })
+
+  it('serializes scheduled cleanup and manual retry for the same remote object', async () => {
+    const context = fakeContext()
+    const r2 = new MemoryR2Store()
+    let deletes = 0
+    let enterDelete!: () => void
+    let releaseDelete!: () => void
+    const entered = new Promise<void>(resolve => { enterDelete = resolve })
+    const released = new Promise<void>(resolve => { releaseDelete = resolve })
+    r2.delete = async () => {
+      deletes += 1
+      enterDelete()
+      await released
+    }
+    const cleanup = new PersistentArchiveCleanupQueue(context as any, r2)
+    await cleanup.enqueue('paper', 'P1', ['paper.pdf'])
+
+    const scheduled = cleanup.runDue()
+    await entered
+    const manual = cleanup.retryNow('P1')
+    releaseDelete()
+    await Promise.all([scheduled, manual])
+
+    expect(deletes).toBe(1)
+    expect(await cleanup.counts()).toEqual({ pending: 0, failed: 0, complete: 1 })
   })
 
   it('retires a replaced attachment for 30 days and can restore the prior version', async () => {

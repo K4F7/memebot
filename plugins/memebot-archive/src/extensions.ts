@@ -162,7 +162,7 @@ export class PersistentArchiveBackupQueue {
   }
 }
 
-interface CleanupJob {
+interface CleanupJobRow {
   id: string
   recordKind: 'paper' | 'work'
   recordId: string
@@ -171,6 +171,10 @@ interface CleanupJob {
   attempts: number
   nextAttemptAt: Date
   error: string
+}
+
+export interface ArchiveCleanupJob extends Omit<CleanupJobRow, 'objectKeys'> {
+  objectKeys: string[]
 }
 
 export class PersistentArchiveCleanupQueue {
@@ -189,30 +193,41 @@ export class PersistentArchiveCleanupQueue {
     else await this.ctx.model.create('archiveCleanupJob', { id, ...data })
   }
   async runDue() {
-    if (this.running) return this.running
-    this.running = (async () => {
-      const jobs = await this.ctx.model.get('archiveCleanupJob', {}) as CleanupJob[]
+    return this.serialized(async () => {
+      const jobs = await this.ctx.model.get('archiveCleanupJob', {}) as CleanupJobRow[]
       for (const job of jobs) if (job.state !== 'complete' && new Date(job.nextAttemptAt).getTime() <= this.now().getTime()) await this.run(job)
-    })()
-    try { await this.running } finally { this.running = undefined }
+    })
   }
   async retryNow(recordId?: string) {
-    const jobs = await this.ctx.model.get('archiveCleanupJob', recordId ? { recordId } : {}) as CleanupJob[]
-    for (const job of jobs) if (job.state !== 'complete') {
-      const pending = { ...job, state: 'pending' as const, nextAttemptAt: this.now() }
-      await this.ctx.model.set('archiveCleanupJob', { id: job.id }, { state: pending.state, nextAttemptAt: pending.nextAttemptAt })
-      await this.run(pending)
-    }
+    return this.serialized(async () => {
+      const jobs = await this.ctx.model.get('archiveCleanupJob', recordId ? { recordId } : {}) as CleanupJobRow[]
+      for (const job of jobs) if (job.state !== 'complete') {
+        const pending = { ...job, state: 'pending' as const, nextAttemptAt: this.now() }
+        await this.ctx.model.set('archiveCleanupJob', { id: job.id }, { state: pending.state, nextAttemptAt: pending.nextAttemptAt })
+        await this.run(pending)
+      }
+    })
   }
   async counts() {
-    const jobs = await this.ctx.model.get('archiveCleanupJob', {}) as CleanupJob[]
+    const jobs = await this.ctx.model.get('archiveCleanupJob', {}) as CleanupJobRow[]
     return {
       pending: jobs.filter(job => job.state === 'pending').length,
       failed: jobs.filter(job => job.state === 'failed').length,
       complete: jobs.filter(job => job.state === 'complete').length,
     }
   }
-  private async run(job: CleanupJob) {
+  async list(recordId?: string): Promise<ArchiveCleanupJob[]> {
+    const jobs = await this.ctx.model.get('archiveCleanupJob', recordId ? { recordId } : {}) as CleanupJobRow[]
+    const rank = { failed: 0, pending: 1, complete: 2 }
+    return jobs.map(job => ({
+      ...job,
+      objectKeys: JSON.parse(job.objectKeys) as string[],
+      nextAttemptAt: new Date(job.nextAttemptAt),
+    })).sort((a, b) => rank[a.state] - rank[b.state]
+      || b.nextAttemptAt.getTime() - a.nextAttemptAt.getTime()
+      || a.recordId.localeCompare(b.recordId))
+  }
+  private async run(job: CleanupJobRow) {
     try {
       for (const key of JSON.parse(job.objectKeys) as string[]) await this.r2.delete(key)
       await this.ctx.model.set('archiveCleanupJob', { id: job.id }, { state: 'complete', error: '' })
@@ -221,6 +236,12 @@ export class PersistentArchiveCleanupQueue {
       const message = error instanceof Error ? error.message : String(error)
       await this.ctx.model.set('archiveCleanupJob', { id: job.id }, { state: 'failed', attempts, nextAttemptAt: new Date(this.now().getTime() + backupDelay(attempts)), error: message })
     }
+  }
+  private async serialized(operation: () => Promise<void>) {
+    while (this.running) await this.running
+    const running = operation()
+    this.running = running
+    try { await running } finally { if (this.running === running) this.running = undefined }
   }
 }
 

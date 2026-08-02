@@ -47,10 +47,36 @@ describe('archive integration paths', () => {
       'memebot/archive/restore/preview', 'memebot/archive/restore/apply', 'memebot/archive/restore/history',
       'memebot/archive/removed', 'memebot/archive/record/remove', 'memebot/archive/record/restore', 'memebot/archive/record/purge',
       'memebot/archive/record/anonymize', 'memebot/archive/attachments/retired', 'memebot/archive/attachment/restore', 'memebot/archive/lifecycle/history',
+      'memebot/archive/cleanup/status', 'memebot/archive/cleanup/retry',
     ]))
     for (const name of listeners) {
       expect(authorities.get(name), name).toBe(1)
     }
+  })
+  it('exposes remote cleanup failures and enforces typed identifiers for permanent actions', async () => {
+    const root = await tempRoot()
+    const handlers = new Map<string, (...args: any[]) => Promise<any>>()
+    const consoleService = { addEntry() {}, addListener(name: string, handler: (...args: any[]) => Promise<any>) { handlers.set(name, handler) } }
+    const ctx = { get: () => consoleService } as any
+    const cleanup = {
+      counts: vi.fn(async () => ({ pending: 0, failed: 1, complete: 0 })),
+      list: vi.fn(async () => [{ id: 'job-1', recordKind: 'work', recordId: 'W1', objectKeys: ['archive.zip'], state: 'failed', attempts: 1, nextAttemptAt: new Date(), error: 'R2 unavailable' }]),
+      retryNow: vi.fn(async () => undefined),
+    }
+    const service = new ArchiveService({ config: { localPath: root }, db: {
+      works: [{ id: 'W1', title: 'Removed', author: 'Alice', publishedAt: new Date(), lifecycle: 'removed' }],
+    } })
+    new ArchiveConsoleFeatures(ctx, service, Promise.resolve(), undefined, undefined, cleanup).register()
+
+    await expect(handlers.get('memebot/archive/cleanup/status')!()).resolves.toMatchObject({
+      counts: { failed: 1 }, jobs: [expect.objectContaining({ recordId: 'W1', error: 'R2 unavailable' })],
+    })
+    await handlers.get('memebot/archive/cleanup/retry')!('W1')
+    expect(cleanup.retryNow).toHaveBeenCalledWith('W1')
+    await expect(handlers.get('memebot/archive/record/purge')!('W1', 'Y')).rejects.toThrow('Archive Identifier')
+    await expect(handlers.get('memebot/archive/record/purge')!('W1', 'W1')).resolves.toMatchObject({ id: 'W1', lifecycle: 'purged' })
+    await expect(handlers.get('memebot/archive/record/anonymize')!('W1', 'Y')).rejects.toThrow('Archive Identifier')
+    await expect(handlers.get('memebot/archive/record/anonymize')!('W1', 'W1')).resolves.toMatchObject({ id: 'W1', author: '已匿名' })
   })
   it('declares Access as required and delegates QQ read/write authorization with the full session', async () => {
     expect(inject).toContain('access')
