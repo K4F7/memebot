@@ -1,6 +1,7 @@
 {
   "files": [],
   "references": [
+    { "path": "plugins/memebot-access" },
     { "path": "plugins/memebot-faq" },
     { "path": "plugins/memebot-activity" },
     { "path": "plugins/memebot-intake" },
