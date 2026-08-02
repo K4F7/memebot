@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
+import access from '../plugins/memebot-access/src'
 import activity from '../plugins/memebot-activity/src'
 import archive, { ArchiveService, type ArchiveSession } from '../plugins/memebot-archive/src'
 import faq from '../plugins/memebot-faq/src'
@@ -13,6 +14,78 @@ afterEach(async () => {
 })
 
 describe('standalone plugin command smoke behaviors', () => {
+  it('lists persistent Access sets only for authorized readers', async () => {
+    const harness = await createKoishiTestHarness(access, {
+      administrators: [{ qq: '10001' }], managementGroups: [{ qq: '20001' }],
+    })
+    harnesses.push(harness)
+    const administrator = await harness.client({ userId: '10001', channelId: 'unlisted' })
+    const ordinary = await harness.client({ userId: '10002', channelId: '20001' })
+
+    await expect(ordinary.receive('access.list')).resolves.toEqual(['你不是管理员。'])
+    await expect(administrator.receive('access.list')).resolves.toEqual([
+      '显式管理员：10001\n管理群：20001',
+    ])
+  })
+
+  it('applies authorized Access additions to the next decision immediately', async () => {
+    const harness = await createKoishiTestHarness(access, {
+      administrators: [{ qq: '10001' }], managementGroups: [],
+    })
+    harnesses.push(harness)
+    const administratorInGroup = await harness.client({ userId: '10001', channelId: '20001' })
+    const administratorInPrivate = await harness.client({ userId: '10001' })
+    const ordinary = await harness.client({ userId: '10002', channelId: '20001' })
+
+    await expect(ordinary.receive('access.admin.add 10002')).resolves.toEqual(['你不是管理员。'])
+    await expect(administratorInGroup.receive('access.group.add 20001')).resolves.toEqual([
+      '此群不是管理群，请私聊操作或先添加该群。',
+    ])
+    await expect(administratorInPrivate.receive('access.group.add 20001')).resolves.toEqual(['管理群 20001 已添加。'])
+    await expect(administratorInPrivate.receive('access.group.add 20001')).resolves.toEqual(['管理群 20001 已存在，无需重复添加。'])
+    await expect(administratorInGroup.receive('access.admin.add 10002')).resolves.toEqual(['显式管理员 10002 已添加。'])
+    await expect(administratorInGroup.receive('access.admin.add 10002')).resolves.toEqual(['显式管理员 10002 已存在，无需重复添加。'])
+    await expect(ordinary.receive('access.list')).resolves.toEqual([
+      '显式管理员：10001、10002\n管理群：20001',
+    ])
+  })
+
+  it('makes Access removals idempotent while rejecting chat-side self-removal', async () => {
+    const harness = await createKoishiTestHarness(access, {
+      administrators: [{ qq: '10001' }, { qq: '10002' }], managementGroups: [{ qq: '20001' }],
+    })
+    harnesses.push(harness)
+    const self = await harness.client({ userId: '10001' })
+    const operator = await harness.client({ userId: '40001', authority: 4 })
+    const removed = await harness.client({ userId: '10002' })
+
+    await expect(self.receive('access.admin.rm 10001')).resolves.toEqual([
+      '不能通过 QQ 命令移除当前操作账号。',
+    ])
+    await expect(operator.receive('access.admin.rm 10002')).resolves.toEqual(['显式管理员 10002 已移除。'])
+    await expect(operator.receive('access.admin.rm 10002')).resolves.toEqual(['显式管理员 10002 不存在，无需移除。'])
+    await expect(operator.receive('access.group.rm 20001')).resolves.toEqual(['管理群 20001 已移除。'])
+    await expect(operator.receive('access.group.rm 20001')).resolves.toEqual(['管理群 20001 不存在，无需移除。'])
+    await expect(removed.receive('access.list')).resolves.toEqual(['你不是管理员。'])
+  })
+
+  it('rejects non-decimal Access command identifiers', async () => {
+    const harness = await createKoishiTestHarness(access, {
+      administrators: [{ qq: '10001' }], managementGroups: [],
+    })
+    harnesses.push(harness)
+    const administrator = await harness.client({ userId: '10001' })
+
+    for (const command of [
+      'access.admin.add 10a',
+      'access.admin.rm +10002',
+      'access.group.add 20.001',
+      'access.group.rm group-1',
+    ]) {
+      await expect(administrator.receive(command)).resolves.toEqual(['QQ 号必须是纯数字。'])
+    }
+  })
+
   it('loads activity and lists activities through a Mock session', async () => {
     const harness = await createKoishiTestHarness(activity, {})
     harnesses.push(harness)
