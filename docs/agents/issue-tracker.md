@@ -34,3 +34,7 @@ When a skill says "fetch the relevant ticket", run `gh issue view <number> --com
 - If those features are unavailable, use task lists and a `Blocked by: #<number>` line.
 - Claim a ticket with `gh issue edit <number> --add-assignee @me`.
 - Resolve it by commenting with the result and closing the issue.
+
+## Agent ticket execution
+
+Before implementing an agent-grabbable ticket, follow the isolated worktree contract in `docs/agents/agent-delivery.md`. `Blocked by` describes integration readiness: a dependent ticket remains blocked until every listed blocker has landed in `main` and the integrated result has passed verification. Work completed only on another issue branch does not satisfy a blocker.

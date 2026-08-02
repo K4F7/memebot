@@ -49,6 +49,10 @@ yarn start
 
 Issues and PRDs are tracked in GitHub Issues for `K4F7/memebot`. See `docs/agents/issue-tracker.md`.
 
+### Agent ticket delivery
+
+Implement every agent-grabbable ticket in its own branch and dedicated worktree. Do not edit the shared `main` checkout. See `docs/agents/agent-delivery.md` for creation, handoff, integration, and cleanup.
+
 ### Triage labels
 
 Use the five canonical triage labels without renaming. See `docs/agents/triage-labels.md`.
