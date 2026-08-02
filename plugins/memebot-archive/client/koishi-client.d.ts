@@ -19,5 +19,14 @@ declare module '@koishijs/client' {
     replace(location: { path: string; query: Record<string, string> }): Promise<unknown>
   }
 
+  export const message: {
+    success(content: string): void
+    error(content: string): void
+  }
+
+  export const messageBox: {
+    confirm(message: string, title: string, options?: Record<string, unknown>): Promise<unknown>
+  }
+
   export function send(type: string, ...args: unknown[]): Promise<unknown>
 }
