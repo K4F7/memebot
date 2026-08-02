@@ -9,7 +9,7 @@ vi.mock('koishi', () => {
   return { Context: class {}, Schema: { object: chain, array: chain, number: chain, string: chain } }
 })
 
-import { FaqService, formatFaqList, isAdministrator, paginate, parseFaqId, selectNumber } from '../src/index'
+import { FaqService, apply, formatFaqList, paginate, parseFaqId, selectNumber } from '../src/index'
 
 function fakeContext() {
   const rows: any[] = []
@@ -54,8 +54,8 @@ describe('FAQ workflows', () => {
     const end = paginate(entries, 3, 10); expect(end.items.map(item => item.id)).toEqual([21]); expect(paginate(entries, 99, 10).currentPage).toBe(3); expect(formatFaqList(end)).toMatch(/第 3\/3 页/)
   })
 
-  it('requires authority and a matching administrator whitelist', () => {
-    const config = { administrators: [{ qq: '10001' }], managementGroups: [{ qq: '20001' }] }
-    expect(isAdministrator({ userId: '10001', guildId: '20001', user: { authority: 1 } }, config)).toBe(true); expect(isAdministrator({ userId: 'other', guildId: '20001', user: { authority: 4 } }, config)).toBe(true); expect(isAdministrator({ userId: 'other', guildId: '20001', user: { authority: 3 } }, config)).toBe(false); expect(isAdministrator({ userId: '10001', guildId: 'other', user: { authority: 5 } }, config)).toBe(false)
+  it('refuses to start without the shared Access service', () => {
+    const ctx = { model: { extend: vi.fn() }, command: vi.fn() } as any
+    expect(() => apply(ctx, { pageSize: 10 })).toThrow('memebot-access')
   })
 })
