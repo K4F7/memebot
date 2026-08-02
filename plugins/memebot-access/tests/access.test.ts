@@ -90,6 +90,41 @@ describe('Access persistence', () => {
 })
 
 describe('Access decisions', () => {
+  it('covers every role and chat-location combination in the shared decision matrix', async () => {
+    const ctx = await createDatabaseContext()
+    const access = new AccessService(ctx)
+    await access.initialize({
+      administrators: [{ qq: '10001' }],
+      managementGroups: [{ qq: '20001' }],
+    })
+    const roles = [
+      { name: 'ordinary', session: { userId: '10002', user: { authority: 1 } }, administrator: false },
+      { name: 'explicit', session: { userId: '10001', user: { authority: 1 } }, administrator: true },
+      { name: 'authority 4', session: { userId: '40001', user: { authority: 4 } }, administrator: true },
+    ]
+    const locations = [
+      { name: 'private chat', guildId: undefined, groups: ['20001'], writable: true },
+      { name: 'Management Group', guildId: '20001', groups: ['20001'], writable: true },
+      { name: 'non-Management Group', guildId: '29999', groups: ['20001'], writable: false },
+      { name: 'group with an empty Management Group set', guildId: '20001', groups: [], writable: false },
+    ]
+
+    for (const location of locations) {
+      const current = await access.listManagementGroups()
+      for (const qq of current) await access.removeManagementGroup(qq)
+      for (const qq of location.groups) await access.addManagementGroup(qq)
+      for (const role of roles) {
+        const session = { ...role.session, guildId: location.guildId }
+        await expect(access.authorizeRead(session), `${role.name} read in ${location.name}`).resolves.toMatchObject({
+          allowed: role.administrator,
+        })
+        await expect(access.authorizeWrite(session), `${role.name} write in ${location.name}`).resolves.toMatchObject({
+          allowed: role.administrator && location.writable,
+        })
+      }
+    }
+  })
+
   it('allows explicit and authority 4 administrators to read in any chat', async () => {
     const ctx = await createDatabaseContext()
     const access = new AccessService(ctx)
