@@ -17,6 +17,19 @@ const activityWithAccess = {
   },
 }
 
+const faqWithAccess = {
+  name: 'test-faq-with-access',
+  apply(ctx: any, config: any) {
+    const result: { service?: any } = {}
+    access.apply(ctx, config.access)
+    ctx.inject(['access'], (injected: any) => {
+      faq.apply(injected, config.faq)
+      result.service = injected.faq
+    })
+    return result
+  },
+}
+
 afterEach(async () => {
   await Promise.all(harnesses.splice(0).map(harness => harness.stop()))
 })
@@ -239,33 +252,42 @@ describe('standalone plugin command smoke behaviors', () => {
   })
 
   it('loads FAQ and lists entries through a Mock session', async () => {
-    const harness = await createKoishiTestHarness(faq, {})
+    const harness = await createKoishiTestHarness(faqWithAccess, {
+      access: { administrators: [], managementGroups: [] }, faq: { pageSize: 10 },
+    })
     harnesses.push(harness)
 
     const client = await harness.client({ userId: '10003', channelId: '20001' })
     await expect(client.receive('faq')).resolves.toEqual(['暂无公开 FAQ。'])
   })
 
-  it('drives plugin permission checks with Mock user authority', async () => {
-    const harness = await createKoishiTestHarness(faq, {
-      administrators: [{ qq: '10005' }],
-      managementGroups: [],
-      pageSize: 10,
+  it('uses Access identity for FAQ reads and Access location for mutations', async () => {
+    const harness = await createKoishiTestHarness(faqWithAccess, {
+      access: { administrators: [{ qq: '10005' }], managementGroups: [{ qq: '20001' }] },
+      faq: { pageSize: 10 },
     })
     harnesses.push(harness)
+    const service = (harness.pluginResult as any).service
+    const entry = await service.create({ question: '隐藏问题', answer: '隐藏答案', visible: false })
 
     const denied = await harness.client({ userId: '10003', channelId: '20001', authority: 3 })
-    await expect(denied.receive('faq.manage')).resolves.toEqual([
-      '只有显式管理员 QQ 或 authority 4 用户可在管理位置管理 FAQ。',
-    ])
+    await expect(denied.receive(`faq #${entry.id}`)).resolves.toEqual(['FAQ 编号不存在。'])
+    await expect(denied.receive('faq.manage')).resolves.toEqual(['你不是管理员。'])
 
-    const allowed = await harness.client({ userId: '10005', channelId: '20001', authority: 4 })
-    await expect(allowed.receive('faq.manage')).resolves.toEqual(['暂无 FAQ。'])
+    const administrator = await harness.client({ userId: '10005', channelId: 'unlisted' })
+    await expect(administrator.receive(`faq #${entry.id}`)).resolves.toEqual([
+      `FAQ #${entry.id}\n问题：隐藏问题\n答案：隐藏答案`,
+    ])
+    await expect(administrator.receive('faq.manage')).resolves.toEqual(['1. [隐藏] 隐藏问题'])
+    await expect(administrator.receive(`faq.rm #${entry.id}`)).resolves.toEqual([
+      '此群不是管理群，请私聊操作或先添加该群。',
+    ])
   })
 
   it('drives the guided FAQ add flow through Mock prompts', async () => {
-    const harness = await createKoishiTestHarness(faq, {
-      administrators: [{ qq: '10005' }], managementGroups: [], pageSize: 10,
+    const harness = await createKoishiTestHarness(faqWithAccess, {
+      access: { administrators: [{ qq: '10005' }], managementGroups: [{ qq: '20001' }] },
+      faq: { pageSize: 10 },
     })
     harnesses.push(harness)
     const client = await harness.client({ userId: '10005', channelId: '20001' })
