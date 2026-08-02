@@ -12,7 +12,7 @@ vi.mock('koishi', () => {
   return { Context: class {}, Schema: { object: chain, array: chain, number: chain, string: chain, boolean: chain } }
 })
 
-import { ArchiveConsoleFeatures, ArchiveService, KoishiArchiveMetadataRepository, MemoryR2Store } from '../src/index'
+import { ArchiveConsoleFeatures, ArchiveService, authorizeArchiveSession, inject, KoishiArchiveMetadataRepository, MemoryR2Store } from '../src/index'
 
 const admin = { userId: 'owner', authority: 4 }
 const roots: string[] = []
@@ -33,7 +33,8 @@ describe('archive integration paths', () => {
     const listeners: string[] = []
     const entries: unknown[] = []
     const authorities = new Map<string, number | undefined>()
-    const ctx = { console: { addEntry(entry: unknown) { entries.push(entry) }, addListener(name: string, _handler: unknown, options?: { authority?: number }) { listeners.push(name); authorities.set(name, options?.authority) } } } as any
+    const consoleService = { addEntry(entry: unknown) { entries.push(entry) }, addListener(name: string, _handler: unknown, options?: { authority?: number }) { listeners.push(name); authorities.set(name, options?.authority) } }
+    const ctx = { get: () => consoleService } as any
     new ArchiveConsoleFeatures(ctx, new ArchiveService({ config: { localPath: root } }), Promise.resolve()).register()
     expect(entries).toHaveLength(1)
     expect(listeners).toEqual(expect.arrayContaining([
@@ -47,14 +48,28 @@ describe('archive integration paths', () => {
       'memebot/archive/removed', 'memebot/archive/record/remove', 'memebot/archive/record/restore', 'memebot/archive/record/purge',
       'memebot/archive/record/anonymize', 'memebot/archive/attachments/retired', 'memebot/archive/attachment/restore', 'memebot/archive/lifecycle/history',
     ]))
-    for (const name of ['memebot/archive/removed', 'memebot/archive/record/remove', 'memebot/archive/record/restore', 'memebot/archive/record/purge', 'memebot/archive/record/anonymize', 'memebot/archive/attachments/retired', 'memebot/archive/attachment/restore', 'memebot/archive/lifecycle/history']) {
-      expect(authorities.get(name), name).toBe(4)
+    for (const name of listeners) {
+      expect(authorities.get(name), name).toBe(1)
     }
+  })
+  it('declares Access as required and delegates QQ read/write authorization with the full session', async () => {
+    expect(inject).toContain('access')
+    const authorizeRead = vi.fn(async () => ({ allowed: false as const, reason: 'identity' as const, message: 'denied read' }))
+    const authorizeWrite = vi.fn(async () => ({ allowed: true as const }))
+    const ctx = { access: { authorizeRead, authorizeWrite } } as any
+    const session = { userId: '123', guildId: '456', channelId: '789', user: { authority: 2 } }
+
+    await expect(authorizeArchiveSession(ctx, session, 'read')).resolves.toMatchObject({ allowed: false, message: 'denied read' })
+    await expect(authorizeArchiveSession(ctx, session, 'write')).resolves.toEqual({ allowed: true })
+    const expected = { userId: '123', guildId: '456', channelId: '789', user: { authority: 2 } }
+    expect(authorizeRead).toHaveBeenCalledWith(expected)
+    expect(authorizeWrite).toHaveBeenCalledWith(expected)
   })
   it('blocks removed Work preview files at every Console attachment route', async () => {
     const root = await tempRoot()
     const handlers = new Map<string, (...args: any[]) => Promise<any>>()
-    const ctx = { console: { addEntry() {}, addListener(name: string, handler: (...args: any[]) => Promise<any>) { handlers.set(name, handler) } } } as any
+    const consoleService = { addEntry() {}, addListener(name: string, handler: (...args: any[]) => Promise<any>) { handlers.set(name, handler) } }
+    const ctx = { get: () => consoleService } as any
     const service = new ArchiveService({ config: { localPath: root }, db: {
       issues: [{ id: 'P1', issueNumber: '1', month: '2026-08', title: 'Removed Paper', publishedAt: new Date(), lifecycle: 'removed' }],
       works: [{ id: 'W1', title: 'Removed', author: 'Alice', publishedAt: new Date(), lifecycle: 'removed' }],

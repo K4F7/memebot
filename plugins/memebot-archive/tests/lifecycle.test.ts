@@ -37,15 +37,12 @@ function zip(content = 'hello') {
 }
 
 describe('Archive removal and recovery lifecycle', () => {
-  it('restricts lifecycle inventory and mutations to Archive administrators', async () => {
+  it('keeps destructive confirmation inside the domain after authorization at the entry boundary', async () => {
     const root = await tempRoot(); const service = new ArchiveService({ config: { localPath: root } })
     const paper = await service.publishIssue(admin, { month: '2026-08', issueNumber: '8', title: 'Issue', attachment: { filename: 'paper.pdf', contentType: 'application/pdf', data: '%PDF-1.7\n%%EOF' } })
-    await expect(service.removeIssue({ authority: 1 }, paper.id, 'Y')).rejects.toThrow('permission')
-    expect(() => service.listRemoved({ authority: 1 })).toThrow('permission')
+    await expect(service.removeIssue(admin, paper.id, '确认')).rejects.toThrow('exact Y')
     await service.removeIssue(admin, paper.id, 'Y')
-    await expect(service.restoreRecord({ authority: 1 }, paper.id)).rejects.toThrow('permission')
-    await expect(service.purgeRecord({ authority: 1 }, paper.id, 'Y')).rejects.toThrow('permission')
-    await expect(service.anonymizeRecord({ authority: 1 }, paper.id, 'Y')).rejects.toThrow('permission')
+    expect(service.listRemoved(admin)).toEqual([expect.objectContaining({ id: paper.id, lifecycle: 'removed' })])
   })
 
   it('hides a removed Work, preserves its Paper appearance, and restores the original identifier', async () => {
