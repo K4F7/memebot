@@ -12,7 +12,7 @@ describe('agent ticket delivery contract', () => {
 
   it('defines the isolated worktree lifecycle and handoff evidence', () => {
     expect(contract).toMatch(/one issue, one branch, and one dedicated worktree/i)
-    expect(contract).toMatch(/latest `main`/i)
+    expect(contract).toMatch(/latest `origin\/main`/i)
     expect(contract).toMatch(/blockers?.+integrated.+verified/is)
     expect(contract).toMatch(/never.+shared `main` checkout/is)
     expect(contract).toMatch(/never.+reuse.+worktree/is)
@@ -21,15 +21,21 @@ describe('agent ticket delivery contract', () => {
     for (const field of [
       'Issue',
       'Branch',
+      'Remote branch',
       'Base commit',
       'Head commit',
       'Change summary',
       'Verification results',
+      'Push verification',
     ]) {
       expect(contract).toContain(`- ${field}:`)
     }
 
     expect(contract).toMatch(/integrator.+dependency order/is)
+    expect(contract).toContain('test -z "$(git status --short)"')
+    expect(contract).toContain('git push --set-upstream origin "$branch"')
+    expect(contract).toContain('git ls-remote --exit-code origin "refs/heads/$branch"')
+    expect(contract).toMatch(/local-only.+unpushed.+not ready/is)
     expect(contract).toMatch(/downstream.+blocked.+integration.+passes/is)
     expect(contract).toMatch(/cleanup/i)
   })
