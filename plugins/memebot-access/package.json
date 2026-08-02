@@ -1,6 +1,6 @@
 {
   "name": "koishi-plugin-memebot-access",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "description": "自用，memebot 插件统一授权来源",
   "license": "MIT",
   "main": "lib/index.js",

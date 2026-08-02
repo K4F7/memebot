@@ -163,6 +163,71 @@ export class AccessService {
   }
 }
 
+function commandSession(session: Session): AccessSession {
+  return {
+    userId: session.userId,
+    guildId: session.guildId,
+    channelId: session.channelId,
+    user: { authority: (session.user as any)?.authority },
+  }
+}
+
+function formatAccessList(administrators: string[], managementGroups: string[]) {
+  return [
+    `显式管理员：${administrators.length ? administrators.join('、') : '（空）'}`,
+    `管理群：${managementGroups.length ? managementGroups.join('、') : '（空）'}`,
+  ].join('\n')
+}
+
+function registerAccessCommands(ctx: Context, service: AccessService) {
+  ctx.command('access.list', '查看 Access 显式管理员和管理群').action(async ({ session }) => {
+    if (!session) return accessDenialMessages.identity
+    const decision = await service.authorizeRead(commandSession(session))
+    if (!decision.allowed) return decision.message
+    return formatAccessList(
+      await service.listExplicitAdministrators(),
+      await service.listManagementGroups(),
+    )
+  })
+
+  const registerProtectedWriteCommand = (
+    command: string,
+    description: string,
+    handler: (qq: string, session: Session) => Promise<string>,
+  ) => ctx.command(command, description).action(async ({ session }, qq) => {
+    if (!session) return accessDenialMessages.identity
+    const decision = await service.authorizeWrite(commandSession(session))
+    if (!decision.allowed) return decision.message
+    try {
+      return await handler(String(qq ?? ''), session)
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error)
+    }
+  })
+
+  registerProtectedWriteCommand('access.admin.add <qq:string>', '添加显式管理员', async (qq) => {
+    const added = await service.addExplicitAdministrator(qq)
+    const normalized = normalizeQq(qq)
+    return added ? `显式管理员 ${normalized} 已添加。` : `显式管理员 ${normalized} 已存在，无需重复添加。`
+  })
+  registerProtectedWriteCommand('access.group.add <qq:string>', '添加管理群', async (qq) => {
+    const added = await service.addManagementGroup(qq)
+    const normalized = normalizeQq(qq)
+    return added ? `管理群 ${normalized} 已添加。` : `管理群 ${normalized} 已存在，无需重复添加。`
+  })
+  registerProtectedWriteCommand('access.admin.rm <qq:string>', '移除显式管理员', async (qq, session) => {
+    const normalized = normalizeQq(qq)
+    if (normalized === session.userId) throw new Error('不能通过 QQ 命令移除当前操作账号。')
+    const removed = await service.removeExplicitAdministrator(normalized)
+    return removed ? `显式管理员 ${normalized} 已移除。` : `显式管理员 ${normalized} 不存在，无需移除。`
+  })
+  registerProtectedWriteCommand('access.group.rm <qq:string>', '移除管理群', async (qq) => {
+    const removed = await service.removeManagementGroup(qq)
+    const normalized = normalizeQq(qq)
+    return removed ? `管理群 ${normalized} 已移除。` : `管理群 ${normalized} 不存在，无需移除。`
+  })
+}
+
 export function apply(ctx: Context, config: Config) {
   const settings: Config = {
     administrators: [],
@@ -172,6 +237,7 @@ export function apply(ctx: Context, config: Config) {
   defineAccessModels(ctx)
   const service = new AccessService(ctx)
   ctx.provide('access', service)
+  registerAccessCommands(ctx, service)
   ctx.on('ready', () => service.initialize(settings))
 }
 
