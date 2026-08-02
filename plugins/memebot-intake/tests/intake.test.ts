@@ -8,7 +8,7 @@ vi.mock('koishi', () => {
   return { Context: class {}, Schema: { object: chain, array: chain, number: chain, string: chain } }
 })
 
-import { countDraft, draftKey, IntakeAttachmentStore, IntakeDraftService, IntakeService, canTransition, isAdmin } from '../src/index'
+import { countDraft, draftKey, IntakeAttachmentStore, IntakeDraftService, IntakeService, apply, canTransition } from '../src/index'
 
 function fakeContext() {
   const tables = new Map<string, any[]>()
@@ -104,8 +104,9 @@ describe('intake workflows', () => {
     await service.updateStatus(record.id, 'approved'); await service.updateStatus(record.id, 'closed'); expect((await service.updateStatus(record.id, 'pending-review')).status).toBe('pending-review')
   })
 
-  it('accepts authority or configured user/group administration', () => {
-    const config = { targets: { submission: {}, feedback: {}, suggestion: {} }, administrators: [{ qq: 'u1' }], managementGroups: [{ qq: 'g1' }], attachmentPath: 'data' }
-    expect(isAdmin({ userId: 'other', user: { authority: 4 } }, config)).toBe(true); expect(isAdmin({ userId: 'u1', user: { authority: 0 } }, config)).toBe(true); expect(isAdmin({ guildId: 'g1', user: { authority: 0 } }, config)).toBe(false); expect(isAdmin({ userId: 'other', guildId: 'other', user: { authority: 3 } }, config)).toBe(false); expect(canTransition('suggestion', 'closed', 'pending-review')).toBe(true)
+  it('refuses to start without the shared Access service', () => {
+    const ctx = { model: { extend: vi.fn() }, command: vi.fn() } as any
+    expect(() => apply(ctx, {} as any)).toThrow('memebot-access')
+    expect(canTransition('suggestion', 'closed', 'pending-review')).toBe(true)
   })
 })

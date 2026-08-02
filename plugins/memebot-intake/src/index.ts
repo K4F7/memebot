@@ -2,10 +2,11 @@ import { createHash } from 'node:crypto'
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { basename, join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { Context, h, Schema } from 'koishi'
+import { Context, h, Schema, type Session } from 'koishi'
+import type { AccessSession } from 'koishi-plugin-memebot-access'
 
 export const name = 'memebot-intake'
-export const inject = ['database']
+export const inject = ['database', 'access']
 
 export type IntakeType = 'submission' | 'feedback' | 'suggestion'
 export function draftKey(userId: string, conversationId: string) { return `${userId}\u0000${conversationId}` }
@@ -104,8 +105,6 @@ export interface QqTarget { qq: string }
 export interface TargetConfig { users?: QqTarget[]; groups?: QqTarget[] }
 export interface Config {
   targets: { submission: TargetConfig; feedback: TargetConfig; suggestion: TargetConfig }
-  administrators: QqTarget[]
-  managementGroups: QqTarget[]
   attachmentPath: string
 }
 
@@ -118,8 +117,6 @@ export const Config: Schema<Config> = Schema.object({
     feedback: targetSchema().default({ users: [], groups: [] }),
     suggestion: targetSchema().default({ users: [], groups: [] }),
   }).default({ submission: { users: [], groups: [] }, feedback: { users: [], groups: [] }, suggestion: { users: [], groups: [] } }),
-  administrators: qqTable().default([]).description('可管理本插件的 QQ 用户'),
-  managementGroups: qqTable().default([]).description('允许执行管理动作的 QQ 群'),
   attachmentPath: Schema.string().default('data/memebot-intake').description('Intake 附件本地目录'),
 })
 
@@ -132,12 +129,6 @@ const transitions: Record<IntakeType, Record<IntakeStatus, IntakeStatus[]>> = {
 
 export function canTransition(type: IntakeType, from: IntakeStatus, to: IntakeStatus) {
   return transitions[type][from]?.includes(to) ?? false
-}
-
-export function isAdmin(session: { userId?: string; guildId?: string; user?: { authority?: number } }, config: Config) {
-  const identity = (session.user?.authority ?? 0) >= 4 || (!!session.userId && config.administrators.some(item => item.qq === session.userId))
-  const allowedLocation = !session.guildId || !config.managementGroups.length || config.managementGroups.some(item => item.qq === session.guildId)
-  return identity && allowedLocation
 }
 
 export class IntakeStore {
@@ -536,6 +527,7 @@ function configuredTargets(target: TargetConfig): string[] {
 }
 
 export function apply(ctx: Context, config: Config) {
+  if (!ctx.access) throw new Error('memebot-intake requires memebot-access')
   const inputConfig = config || {} as Config
   config = {
     targets: {
@@ -543,8 +535,6 @@ export function apply(ctx: Context, config: Config) {
       feedback: { users: [], groups: [], ...inputConfig.targets?.feedback },
       suggestion: { users: [], groups: [], ...inputConfig.targets?.suggestion },
     },
-    administrators: inputConfig.administrators || [],
-    managementGroups: inputConfig.managementGroups || [],
     attachmentPath: inputConfig.attachmentPath || 'data/memebot-intake',
   }
   ctx.model.extend('intake', {
@@ -586,6 +576,18 @@ export function apply(ctx: Context, config: Config) {
   }
   const outbox = new IntakeNotificationOutbox(ctx, transport)
   const retention = new IntakeRetentionService(store, attachmentStore)
+  const accessSession = (session?: Session): AccessSession => ({
+    userId: session?.userId,
+    guildId: session?.guildId,
+    channelId: session?.channelId,
+    user: { authority: (session?.user as any)?.authority },
+  })
+  const requireExplicitAdministratorTarget = async (qq: string) => {
+    if (!await ctx.access.isExplicitAdministratorTarget(qq)) {
+      throw new Error('转交目标必须是已持久化的显式管理员 QQ。')
+    }
+    return qq.trim()
+  }
 
   const notify = async (record: IntakeRecord) => {
     const targets = configuredTargets(config.targets[record.type])
@@ -604,7 +606,7 @@ export function apply(ctx: Context, config: Config) {
   root.action(async ({ session }, id) => {
     if (!session) return '无法识别当前用户。'
     const userId = session.userId || ''
-    const administrator = isAdmin(session as any, config)
+    const administrator = (await ctx.access.authorizeRead(accessSession(session))).allowed
     if (id) {
       const record = await store.get(id)
       return record && (administrator || record.submitterId === userId) ? formatRecord(record) : '记录不存在或无权查看。'
@@ -621,7 +623,8 @@ export function apply(ctx: Context, config: Config) {
     const quoteId = (session as any).quote?.id || (session as any).quote?.messageId
     const quotedRecordId = quoteId && await outbox.resolveMessage(String(quoteId))
     if (quotedRecordId) {
-      if (!isAdmin(session as any, config)) return '没有权限。'
+      const decision = await ctx.access.authorizeWrite(accessSession(session))
+      if (!decision.allowed) return decision.message
       const action = (session.content || '').trim()
       const current = await store.get(quotedRecordId)
       if (!current) return '记录不存在。'
@@ -633,7 +636,7 @@ export function apply(ctx: Context, config: Config) {
           return `已认领 ${claimed.id}。`
         }
         const transfer = /^转交\s+(\d+)$/.exec(action)
-        if (transfer) return formatRecord(await store.transfer(current.id, transfer[1], userId))
+        if (transfer) return formatRecord(await store.transfer(current.id, await requireExplicitAdministratorTarget(transfer[1]), userId))
         if (action === '取消认领') return formatRecord(await store.clearAssignment(current.id, userId))
         if (action === '关闭') return formatRecord(await store.close(current.id, userId))
         if (action === '重开' || action === '打开') return formatRecord(await store.reopen(current.id, userId))
@@ -662,19 +665,26 @@ export function apply(ctx: Context, config: Config) {
     } catch (error) { return (error as Error).message }
   })
 
-  const admin = (name: string, action: (session: any, ...args: string[]) => any) => ctx.command(name).action(({ session }, ...args) => {
-    if (!session || !isAdmin(session as any, config)) return '没有权限。'
+  const administratorCommand = (
+    name: string,
+    authorization: 'read' | 'write',
+    action: (session: any, ...args: string[]) => any,
+  ) => ctx.command(name).action(async ({ session }, ...args) => {
+    const decision = authorization === 'read'
+      ? await ctx.access.authorizeRead(accessSession(session))
+      : await ctx.access.authorizeWrite(accessSession(session))
+    if (!decision.allowed) return decision.message
     return action(session, ...(args as string[]))
   })
-  admin('intake.admin.list [type]', async (_s, type) => (await store.listActive(type as IntakeType | undefined)).map(formatRecord).join('\n\n') || '暂无记录。')
-  admin('intake.admin.get <id>', async (_s, id) => { const r = await store.get(id); return r ? formatRecord(r) : '记录不存在。' })
-  admin('intake.admin.status <id> <status>', async (s, id, status) => { try { return formatRecord(await store.setHandlingStatus(id, status as IntakeStatus, s.userId)) } catch (e) { return (e as Error).message } })
-  admin('intake.admin.note <id> <note:text>', async (_s, id, note) => { try { return formatRecord(await store.addNote(id, note)) } catch (e) { return (e as Error).message } })
-  admin('intake.admin.claim <id>', async (s, id) => { try { return formatRecord(await store.claim(id, s.userId)) } catch (e) { return (e as Error).message } })
-  admin('intake.admin.transfer <id> <qq>', async (s, id, qq) => { try { return formatRecord(await store.transfer(id, qq, s.userId)) } catch (e) { return (e as Error).message } })
-  admin('intake.admin.unassign <id>', async (s, id) => { try { return formatRecord(await store.clearAssignment(id, s.userId)) } catch (e) { return (e as Error).message } })
-  admin('intake.admin.close <id>', async (s, id) => { try { return formatRecord(await store.close(id, s.userId)) } catch (e) { return (e as Error).message } })
-  admin('intake.admin.reopen <id>', async (s, id) => { try { return formatRecord(await store.reopen(id, s.userId)) } catch (e) { return (e as Error).message } })
+  administratorCommand('intake.admin.list [type]', 'read', async (_s, type) => (await store.listActive(type as IntakeType | undefined)).map(formatRecord).join('\n\n') || '暂无记录。')
+  administratorCommand('intake.admin.get <id>', 'read', async (_s, id) => { const r = await store.get(id); return r ? formatRecord(r) : '记录不存在。' })
+  administratorCommand('intake.admin.status <id> <status>', 'write', async (s, id, status) => { try { return formatRecord(await store.setHandlingStatus(id, status as IntakeStatus, s.userId)) } catch (e) { return (e as Error).message } })
+  administratorCommand('intake.admin.note <id> <note:text>', 'write', async (_s, id, note) => { try { return formatRecord(await store.addNote(id, note)) } catch (e) { return (e as Error).message } })
+  administratorCommand('intake.admin.claim <id>', 'write', async (s, id) => { try { return formatRecord(await store.claim(id, s.userId)) } catch (e) { return (e as Error).message } })
+  administratorCommand('intake.admin.transfer <id> <qq>', 'write', async (s, id, qq) => { try { return formatRecord(await store.transfer(id, await requireExplicitAdministratorTarget(qq), s.userId)) } catch (e) { return (e as Error).message } })
+  administratorCommand('intake.admin.unassign <id>', 'write', async (s, id) => { try { return formatRecord(await store.clearAssignment(id, s.userId)) } catch (e) { return (e as Error).message } })
+  administratorCommand('intake.admin.close <id>', 'write', async (s, id) => { try { return formatRecord(await store.close(id, s.userId)) } catch (e) { return (e as Error).message } })
+  administratorCommand('intake.admin.reopen <id>', 'write', async (s, id) => { try { return formatRecord(await store.reopen(id, s.userId)) } catch (e) { return (e as Error).message } })
   ctx.setInterval(() => { void outbox.retryDue() }, 60_000)
   ctx.setInterval(() => { void retention.run() }, 24 * 60 * 60_000)
   ctx.on('ready', () => { void outbox.retryDue(); void retention.run() })

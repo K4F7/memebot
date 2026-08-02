@@ -1,6 +1,6 @@
 {
   "name": "koishi-plugin-memebot-intake",
-  "version": "0.1.1-alpha.4",
+  "version": "0.1.1-alpha.5",
   "description": "自用，统一受理投稿、反馈工单与建议",
   "license": "MIT",
   "main": "lib/index.js",
@@ -22,6 +22,9 @@
   },
   "peerDependencies": {
     "koishi": "^4.18.7"
+  },
+  "dependencies": {
+    "koishi-plugin-memebot-access": "workspace:^"
   },
   "devDependencies": {
     "koishi": "^4.18.7",
