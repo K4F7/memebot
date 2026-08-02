@@ -1,19 +1,23 @@
 import { describe, expect, it, vi } from 'vitest'
 
-vi.mock('@koishijs/client', () => ({ send: vi.fn() }))
+const { iconRegister } = vi.hoisted(() => ({ iconRegister: vi.fn() }))
+
+vi.mock('@koishijs/client', () => ({ icons: { register: iconRegister } }))
 
 import register from '../client/index'
 
 describe('Archive Console client', () => {
-  it('registers a login-gated page for every authenticated Console account', () => {
+  it('registers the themed icon and login-gated 迷因档案 page', () => {
     const page = vi.fn()
 
     register({ page } as any)
 
+    expect(iconRegister).toHaveBeenCalledWith('activity:archive', expect.any(Object))
     expect(page).toHaveBeenCalledWith(expect.objectContaining({
       id: 'memebot-archive',
       path: '/memebot/archive',
-      name: 'Archive 归档',
+      name: '迷因档案',
+      icon: 'activity:archive',
       authority: 1,
       component: expect.any(Object),
     }))
