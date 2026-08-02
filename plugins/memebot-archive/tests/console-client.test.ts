@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest'
 const { iconRegister } = vi.hoisted(() => ({ iconRegister: vi.fn() }))
 
 vi.mock('@koishijs/client', () => ({ icons: { register: iconRegister } }))
+vi.mock('../client/icons/ArchiveIcon.vue', () => ({ default: {} }))
+vi.mock('../client/pages/ArchivePage.vue', () => ({ default: {} }))
 
 import register from '../client/index'
 

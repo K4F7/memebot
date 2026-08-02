@@ -161,6 +161,25 @@ yarn check:plugin-loads
 五个插件，并配置 Database、Console、Sandbox 和 Archive WebUI：
 
 ```sh
+# 首次创建（使用官方 Koishi scaffold）
+yarn dlx create-koishi@latest app --yes
+
+# file: 依赖会在安装时快照插件产物，因此先在仓库根构建
+yarn build
+
+# 先创建空 app/yarn.lock，确保它不会被根 workspace 接管；再在 app/package.json
+# 中将五个 memebot 包配置为 file:../plugins/memebot-*，并用 resolutions 将
+# koishi-plugin-memebot-access 固定为 file:../plugins/memebot-access（业务包的
+# workspace:^ 依赖在独立 app 中需要这项解析），
+# 并在 app/koishi.yml 中启用 Database、Console、Sandbox 与五个插件后：
+cd app
+yarn install
+cd ..
+
+# 回到仓库根，执行会在环境不可用或启动报错时失败的集成冒烟检查
+yarn smoke:local-app
+
+# 需要持续操作 Console 或 Sandbox 时单独启动
 cd app
 yarn start
 ```
@@ -169,6 +188,8 @@ yarn start
 Archive 上述紧凑命令；在 Console 验证 Access 授权维护，并在 Archive 页面验证预检、
 Paper/Work、完整 Work 预览、Publication Appearance、软删除、备份重试和恢复预览。
 `app/` 的配置、数据库、日志、缓存、环境文件和依赖均不得提交或发布。
+`yarn smoke:local-app` 会先校验五个本地依赖与必需服务配置，再启动实例、探测 Console，
+并把启动日志中的可见失败作为非零退出；缺失 `app/`、端口被占用或服务不可用都不是成功。
 
 默认测试完全使用内存或临时目录中的替身，不访问真实 R2。若要额外验证真实 R2，先为
 测试准备专用桶，再只通过部署环境注入下列变量；不要把值写入仓库、命令历史或日志：
