@@ -1,22 +1,45 @@
 # MemeBot
 
-面向 QQ 社团运营场景的 Koishi 插件集合。仓库只包含下面四个插件；每个
-`plugins/memebot-*` 都可以独立安装、配置、构建和发布，不依赖其他 MemeBot
-插件。
+面向 QQ 社团运营场景的 Koishi 插件集合。仓库包含 Access 与四个业务插件；每个
+`plugins/memebot-*` 都可以独立安装、配置、构建和发布。唯一的插件间运行时依赖例外是：
+具有受保护操作的业务插件必须使用 `koishi-plugin-memebot-access` 作为中央授权来源。
+Access 本身不依赖任何业务插件，业务插件之间也不互相依赖。
 
 ## 插件与端到端流程
 
 | 插件 | 配置 | 用户动作 | 系统处理 | 管理员动作 | 可观察结果 |
 | --- | --- | --- | --- | --- | --- |
-| `koishi-plugin-memebot-intake` | 为投稿、反馈、建议分别配置 QQ 通知目标和附件目录 | 在 QQ 中开始收集并连续发送文字或附件 | 保存 Intake Draft，提交后生成稳定编号并投递管理通知；失败通知自动重试 | 引用管理通知认领、转交、变更状态、关闭或重开 | 用户获得 `投稿#N`、`反馈#N` 或 `建议#N`，并可查询自己的记录 |
-| `koishi-plugin-memebot-faq` | 配置管理员、管理群和公开列表页大小 | 在 QQ 中分页浏览或按 `#N` 查询 | 只向普通成员展示公开条目 | 新增、编辑、隐藏、重新公开；已隐藏条目才可永久删除 | 用户看到稳定的 FAQ 编号、问题和答案 |
-| `koishi-plugin-memebot-activity` | 配置管理员、管理群以及 QQ 用户/群通知目标 | 在 QQ 中查看近期活动或按 `#N` 查询 | 根据开始、结束时间计算近期与历史状态 | 引导新增、编辑、取消，并选择仅保存或同时通知 | 用户看到活动时间、状态、地点、描述和链接；被选中的 QQ 目标收到通知 |
+| `koishi-plugin-memebot-access` | 首次启动配置 QQ 管理员与 Management Group 种子，并提供 Database 和 Console | 成员照常使用各业务插件，无需单独申请 Access | 从数据库统一判断管理员身份和群聊状态变更位置 | 用 Console 或 `access.*` 命令维护全局授权集合 | 授权变更对下一次操作立即生效；拒绝结果区分身份与位置 |
+| `koishi-plugin-memebot-intake` | 为投稿、反馈、建议分别配置 QQ Notification Group/用户目标和附件目录 | 在 QQ 中开始收集并连续发送文字或附件 | 保存 Intake Draft，提交后生成稳定编号并投递管理通知；失败通知自动重试 | 引用管理通知认领、转交、变更状态、关闭或重开 | 用户获得 `投稿#N`、`反馈#N` 或 `建议#N`，并可查询自己的记录 |
+| `koishi-plugin-memebot-faq` | 配置公开列表页大小，并加载 Access | 在 QQ 中分页浏览或按 `#N` 查询 | 只向普通成员展示公开条目 | 新增、编辑、隐藏、重新公开；已隐藏条目才可永久删除 | 用户看到稳定的 FAQ 编号、问题和答案 |
+| `koishi-plugin-memebot-activity` | 配置 QQ 用户/Notification Group 通知目标，并加载 Access | 在 QQ 中查看近期活动或按 `#N` 查询 | 根据开始、结束时间计算近期与历史状态 | 引导新增、编辑、取消，并选择仅保存或同时通知 | 用户看到活动时间、状态、地点、描述和链接；被选中的 QQ 目标收到通知 |
 | `koishi-plugin-memebot-archive` | 配置本地目录、PDF/ZIP 上限及可选 R2；同时提供 Database 和 Console | 在 QQ 中搜索或按 `P<N>`、`W<N>` 获取归档 | 元数据写入 Koishi Database，附件本地优先保存，R2 作为可重试备份 | QQ 命令用于常用快捷操作；Archive WebUI 完成发布、预览、关联、恢复和生命周期管理 | 用户获得 Paper PDF 或 Work ZIP；管理员可观察预检、备份、恢复和审计状态 |
 
-四个插件的管理员身份规则相同：显式配置的 QQ 用户，或 Koishi authority 不低于
-4。`managementGroups` 只限制群聊管理动作可以发生的位置，不会把群成员自动变成
-管理员；私聊管理动作仍要求管理员身份。插件只按 QQ 用户和 QQ 群路由，不提供其他
-平台的兼容路由，也不提供可配置的 authority 阈值。
+Access 为四个业务插件提供同一套授权规则。显式记录的 QQ 用户或 Koishi authority 不低于
+4 的用户是 Plugin Administrator。Management Group 只限制群聊中的状态变更位置，不会
+把群成员变成管理员；管理员只读不受位置限制，私聊状态变更仍要求管理员身份，空
+Management Group 集合拒绝所有群聊状态变更。Notification Group 仍由对应业务插件配置，
+只负责接收业务通知。插件只按 QQ 用户和 QQ 群路由，不提供非 QQ 路由或可配置的 authority
+阈值。
+
+## Access
+
+部署时为 Access 提供 Koishi Database 和 Console。`administrators` 与
+`managementGroups` 是首次初始化种子：Access 将它们与初始化标记原子写入数据库，之后
+数据库成为唯一授权来源；即使管理员主动清空集合，重启也不会再次导入配置。QQ 号和群号
+都使用去除首尾空格后的纯十进制字符串。
+
+普通成员无需执行 Access 命令，仍可在任意 QQ 群或私聊使用 Intake、FAQ、Activity 与
+Archive 的普通服务。Plugin Administrator 可使用：
+
+- `access.admin.add <QQ>`、`access.admin.rm <QQ>`：新增或移除显式管理员。
+- `access.group.add <群号>`、`access.group.rm <群号>`：新增或移除 Management Group。
+- `access.list`：在任意群或私聊查看显式管理员与 Management Group。
+
+`add` 和 `rm` 是状态变更，须满足身份与当前位置规则；`access.list` 是管理员只读。聊天侧
+不能移除操作者自己的显式管理员记录，重复新增或移除不存在的记录会返回幂等结果。Console
+可维护全部显式记录。安装 Koishi Auth/Login 时，登录前既不显示受保护页面，也不能调用其
+后端接口；未安装时，Console 沿用 Koishi 的开放行为。成功变更会立即影响下一次授权判断。
 
 ## Intake
 
@@ -24,7 +47,6 @@
 
 - `targets.submission`、`targets.feedback`、`targets.suggestion`：每类 Intake 的
   `users` 和 `groups` QQ 通知目标；没有目标的类型不能开始收集。
-- `administrators`、`managementGroups`：管理员身份与管理群位置。
 - `attachmentPath`：附件本地目录，默认 `data/memebot-intake`。
 
 成员在 QQ 中使用 `/submit`、`/feedback` 或 `/suggest` 开始 Intake Draft，也可以使用
@@ -50,9 +72,9 @@ QQ 联系提交者，Bot 不承载管理员与提交者之间的回复会话。
 
 ## FAQ
 
-主要配置是 `administrators`、`managementGroups` 和 `pageSize`（默认 10，范围
-1–50）。成员使用 `/faq` 查看第一页、`/faq <页码>` 翻页、`/faq #<自然数>` 查看完整
-答案；FAQ 的稳定标识符为 `#<自然数>`。
+主要配置是 `pageSize`（默认 10，范围 1–50）；受保护操作统一使用 Access。成员使用
+`/faq` 查看第一页、`/faq <页码>` 翻页、`/faq #<自然数>` 查看完整答案；FAQ 的稳定
+标识符为 `#<自然数>`。
 
 管理员使用 `/faq.add`、`/faq.edit #N`、`/faq.hide #N`、`/faq.show #N`、
 `/faq.rm #N` 和 `/faq.manage`。引导流程只有收到固定关键词 `确认` 才提交，其他输入
@@ -63,7 +85,6 @@ QQ 联系提交者，Bot 不承载管理员与提交者之间的回复会话。
 
 主要配置：
 
-- `administrators`、`managementGroups`：管理员身份与管理群位置。
 - `notificationUsers`、`notificationGroups`：保存时可选择通知的 QQ 用户和群。
 
 成员使用 `/activity` 查看即将开始或进行中的活动，使用 `/activity #<自然数>` 查看
@@ -82,7 +103,6 @@ Archive 必须同时获得 Koishi Database 和 Console 服务。领域词汇 **N
 在现有 QQ 命令和 Archive WebUI 中显示为 **Paper**；下文使用 Paper 时均指同一概念。
 主要配置：
 
-- `administrators`、`managementGroups`：管理员身份与管理群位置。
 - `localPath`：主附件目录，默认 `data/memebot-archive`。
 - `paperMaxMb`、`workMaxMb`：Paper PDF 和 Work ZIP 上限，默认 100 MB、500 MB。
 - `r2.enabled` 及 `accountId`、`bucketName`、`accessKeyId`、`secretAccessKey`、
@@ -127,7 +147,7 @@ R2 预检失败则以本地可用的降级状态继续运行。
 
 ## 本地开发与验收
 
-仓库根目录负责四个独立插件的构建和测试：
+仓库根目录负责 Access 与四个业务插件的构建和测试：
 
 ```sh
 yarn install --immutable
@@ -138,17 +158,17 @@ yarn check:plugin-loads
 ```
 
 本地 Koishi 集成实例位于被 Git 忽略的 `app/` 独立 Yarn 项目。它通过 `file:` 依赖加载
-四个插件，并配置 Database、Console、Sandbox 和 Archive WebUI：
+五个插件，并配置 Database、Console、Sandbox 和 Archive WebUI：
 
 ```sh
 cd app
 yarn start
 ```
 
-在 Sandbox 中分别以成员和管理员身份走通 Intake、FAQ、Activity、Archive 上述紧凑
-命令；在 Console 的 Archive 页面验证预检、Paper/Work、完整 Work 预览、Publication
-Appearance、软删除、备份重试和恢复预览。`app/` 的配置、数据库、日志、缓存、环境文件
-和依赖均不得提交或发布。
+在 Sandbox 中分别以成员和 Plugin Administrator 身份走通 Access、Intake、FAQ、Activity、
+Archive 上述紧凑命令；在 Console 验证 Access 授权维护，并在 Archive 页面验证预检、
+Paper/Work、完整 Work 预览、Publication Appearance、软删除、备份重试和恢复预览。
+`app/` 的配置、数据库、日志、缓存、环境文件和依赖均不得提交或发布。
 
 默认测试完全使用内存或临时目录中的替身，不访问真实 R2。若要额外验证真实 R2，先为
 测试准备专用桶，再只通过部署环境注入下列变量；不要把值写入仓库、命令历史或日志：
