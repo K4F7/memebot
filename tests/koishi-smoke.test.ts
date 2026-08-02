@@ -55,11 +55,58 @@ const archiveWithAccess = {
   },
 }
 
+const allProtectedPluginsWithAccess = {
+  name: 'test-all-protected-plugins-with-access',
+  apply(ctx: any, config: any) {
+    const result: Record<string, unknown> = {}
+    access.apply(ctx, config.access)
+    ctx.inject(['access'], (injected: any) => {
+      result.activity = activity.apply(injected, config.activity)
+      faq.apply(injected, config.faq)
+      result.faq = injected.faq
+      intake.apply(injected, config.intake)
+      result.intake = injected.intake
+      result.archive = archive.apply(injected, config.archive)
+    })
+    return result
+  },
+}
+
 afterEach(async () => {
   await Promise.all(harnesses.splice(0).map(harness => harness.stop()))
 })
 
 describe('standalone plugin command smoke behaviors', () => {
+  it('rejects every protected consumer entry when Access is absent', () => {
+    const consumers = [
+      ['memebot-activity', activity, { notificationUsers: [], notificationGroups: [] }],
+      ['memebot-faq', faq, { pageSize: 10 }],
+      ['memebot-intake', intake, {}],
+      ['memebot-archive', archive, {}],
+    ] as const
+
+    for (const [name, plugin, config] of consumers) {
+      expect(() => plugin.apply({} as any, config as any), name).toThrow(`${name} requires memebot-access`)
+    }
+  })
+
+  it('loads Access and all four protected consumers in one Context', async () => {
+    for (const plugin of [access, activity, faq, intake, archive]) expect(typeof plugin.apply).toBe('function')
+    const harness = await createKoishiTestHarness(allProtectedPluginsWithAccess, {
+      access: { administrators: [{ qq: '10001' }], managementGroups: [{ qq: '20001' }] },
+      activity: { notificationUsers: [], notificationGroups: [] },
+      faq: { pageSize: 10 }, intake: {}, archive: {},
+    })
+    harnesses.push(harness)
+    const administrator = await harness.client({ userId: '10001', channelId: '20001' })
+
+    await expect(administrator.receive('access.list')).resolves.toEqual(['显式管理员：10001\n管理群：20001'])
+    await expect(administrator.receive('activity')).resolves.toEqual(['暂无即将开始或进行中的活动。'])
+    await expect(administrator.receive('faq')).resolves.toEqual(['暂无公开 FAQ。'])
+    await expect(administrator.receive('intake')).resolves.toEqual(['暂无记录。'])
+    await expect(administrator.receive('archive.issues')).resolves.toEqual(['没有找到 Newspaper Issue。'])
+  })
+
   it('keeps Activity public while Access separates administrator reads from writes', async () => {
     const harness = await createKoishiTestHarness(activityWithAccess, {
       access: { administrators: [{ qq: '10001' }], managementGroups: [{ qq: '20001' }] },

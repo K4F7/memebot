@@ -1371,6 +1371,7 @@ export class ArchiveConsoleFeatures {
 }
 
 export function apply(ctx: Context, config: Config) {
+  if (!ctx.access) throw new Error('memebot-archive requires memebot-access')
   const suppliedR2 = config?.r2
   config = {
     localPath: config?.localPath || 'data/memebot-archive',
