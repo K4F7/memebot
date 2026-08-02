@@ -1,7 +1,8 @@
-import { Context, Schema } from 'koishi'
+import { Context, Schema, type Session } from 'koishi'
+import type { AccessSession } from 'koishi-plugin-memebot-access'
 
 export const name = 'memebot-activity'
-export const inject = ['database']
+export const inject = ['database', 'access']
 
 export type ActivityStatus = 'upcoming' | 'active' | 'ended' | 'cancelled'
 
@@ -25,8 +26,6 @@ declare module 'koishi' {
 }
 
 export interface Config {
-  administrators: Array<{ qq: string }>
-  managementGroups: Array<{ qq: string }>
   notificationUsers: Array<{ qq: string }>
   notificationGroups: Array<{ qq: string }>
 }
@@ -34,8 +33,6 @@ export interface Config {
 const qqTable = () => Schema.array(Schema.object({ qq: Schema.string().description('QQ 号') }))
 
 export const Config: Schema<Config> = Schema.object({
-  administrators: qqTable().default([]).description('显式授权的管理员 QQ'),
-  managementGroups: qqTable().default([]).description('允许执行管理动作的 QQ 群'),
   notificationUsers: qqTable().default([]).description('活动通知接收 QQ 用户'),
   notificationGroups: qqTable().default([]).description('活动通知接收 QQ 群'),
 })
@@ -112,14 +109,6 @@ export function buildBroadcastTargets(config: Pick<Config, 'notificationUsers' |
     .filter(Boolean)
     .map((id) => `qq:${id}`)
     .filter((target, index, targets) => targets.indexOf(target) === index)
-}
-
-export function isAdministrator(session: { userId?: string; guildId?: string; channelId?: string; user?: any }, config: Pick<Config, 'administrators' | 'managementGroups'>): boolean {
-  const userId = session.userId ?? ''
-  const groupId = session.guildId ?? session.channelId ?? ''
-  const identity = (session.user?.authority ?? 0) >= 4 || config.administrators.some(item => item.qq === userId)
-  const location = !session.guildId || !config.managementGroups.length || config.managementGroups.some(item => item.qq === groupId)
-  return identity && location
 }
 
 export class ActivityService {
@@ -199,9 +188,8 @@ function parseStatus(value: string | undefined): ActivityStatus | undefined {
 }
 
 export function apply(ctx: Context, config: Config) {
+  if (!ctx.access) throw new Error('memebot-activity requires memebot-access')
   const normalizedConfig: Config = {
-    administrators: config.administrators || [],
-    managementGroups: config.managementGroups || [],
     notificationUsers: config.notificationUsers || [],
     notificationGroups: config.notificationGroups || [],
   }
@@ -232,9 +220,22 @@ export function apply(ctx: Context, config: Config) {
     return activity ? formatActivity({ ...activity, status: effectiveStatus(activity) }) : '活动不存在。'
   })
 
-  const denied = '只有显式管理员 QQ 或 authority 4 用户可在管理位置管理活动。'
-  const admin = (command: string, description: string, handler: (meta: any, ...args: any[]) => Promise<string>) => ctx.command(command, description).action(async (meta, ...args) => {
-    if (!meta.session || !isAdministrator(meta.session, normalizedConfig)) return denied
+  const accessSession = (session?: Session): AccessSession => ({
+    userId: session?.userId,
+    guildId: session?.guildId,
+    channelId: session?.channelId,
+    user: { authority: (session?.user as any)?.authority },
+  })
+  const protectedCommand = (
+    command: string,
+    description: string,
+    authorization: 'read' | 'write',
+    handler: (meta: any, ...args: any[]) => Promise<string>,
+  ) => ctx.command(command, description).action(async (meta, ...args) => {
+    const decision = authorization === 'read'
+      ? await ctx.access.authorizeRead(accessSession(meta.session))
+      : await ctx.access.authorizeWrite(accessSession(meta.session))
+    if (!decision.allowed) return decision.message
     try { return await handler(meta, ...args) } catch (error) { return error instanceof Error ? error.message : String(error) }
   })
   const prompt = async (session: any, label: string, optional = false) => {
@@ -251,11 +252,11 @@ export function apply(ctx: Context, config: Config) {
     throw new Error('操作已取消。')
   }
 
-  admin('activity.history', '查看已结束或已取消的活动', async () => {
+  protectedCommand('activity.history', '查看已结束或已取消的活动', 'read', async () => {
     const activities = await service.history()
     return activities.length ? activities.map(formatActivity).join('\n\n') : '暂无历史活动。'
   })
-  admin('activity.add', '引导新增活动并选择是否通知', async ({ session }) => {
+  protectedCommand('activity.add', '引导新增活动并选择是否通知', 'write', async ({ session }) => {
     const input: ActivityInput = {
       title: await prompt(session, '请输入活动标题。'),
       startAt: await prompt(session, '请输入开始时间。'),
@@ -268,7 +269,7 @@ export function apply(ctx: Context, config: Config) {
     const broadcast = await choice(session, preview)
     return '活动创建成功：\n' + formatActivity(await service.create(input, broadcast))
   })
-  admin('activity.edit <id:posint>', '引导选择并编辑活动字段', async ({ session }, id) => {
+  protectedCommand('activity.edit <id:posint>', '引导选择并编辑活动字段', 'write', async ({ session }, id) => {
     const current = await service.get(Number(id))
     if (!current) throw new Error('活动不存在')
     const fields = (await prompt(session, formatActivity(current) + '\n请输入要修改的字段，用逗号分隔：标题、开始、结束、地点、链接、描述。')).split(/[,，]/).map((item: string) => item.trim())
@@ -286,7 +287,7 @@ export function apply(ctx: Context, config: Config) {
     const broadcast = await choice(session, merged)
     return '活动更新成功：\n' + formatActivity(await service.update(Number(id), patch, broadcast))
   })
-  admin('activity.cancel <id:posint>', '预览并取消活动，选择是否通知', async ({ session }, id) => {
+  protectedCommand('activity.cancel <id:posint>', '预览并取消活动，选择是否通知', 'write', async ({ session }, id) => {
     const current = await service.get(Number(id))
     if (!current) throw new Error('活动不存在')
     const preview = { ...current, status: 'cancelled' as const }

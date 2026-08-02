@@ -14,9 +14,9 @@ vi.mock('koishi', () => {
 import {
   Activity,
   ActivityService,
+  apply,
   buildBroadcastTargets,
   effectiveStatus,
-  isAdministrator,
   listVisibleActivities,
   validateActivity,
 } from '../src'
@@ -55,12 +55,12 @@ describe('activity behavior', () => {
     ])
   })
 
-  it('requires both authority and an administrator whitelist match', () => {
-    const config = { administrators: [{ qq: '10001' }], managementGroups: [{ qq: '20001' }] }
-    expect(isAdministrator({ userId: '10001', guildId: '20001', user: { authority: 1 } }, config)).toBe(true)
-    expect(isAdministrator({ userId: 'other', guildId: '20001', user: { authority: 4 } }, config)).toBe(true)
-    expect(isAdministrator({ userId: 'other', guildId: '20001', user: { authority: 3 } }, config)).toBe(false)
-    expect(isAdministrator({ userId: '10001', guildId: 'other', user: { authority: 5 } }, config)).toBe(false)
+  it('refuses to start without the shared Access service', () => {
+    const ctx = {
+      model: { extend: vi.fn() },
+      command: vi.fn(),
+    } as any
+    expect(() => apply(ctx, { notificationUsers: [], notificationGroups: [] })).toThrow('memebot-access')
   })
 
   it('routes optional broadcasts to all configured users and groups', async () => {
@@ -79,8 +79,6 @@ describe('activity behavior', () => {
       broadcast,
     } as any
     const config = {
-      administrators: [],
-      managementGroups: [],
       notificationUsers: [{ qq: '10001' }, { qq: '10002' }],
       notificationGroups: [{ qq: '20001' }, { qq: '10001' }],
     }
@@ -106,8 +104,6 @@ describe('activity behavior', () => {
       broadcast: vi.fn(),
     } as any
     const service = new ActivityService(ctx, {
-      administrators: [],
-      managementGroups: [],
       notificationUsers: [],
       notificationGroups: [],
     })

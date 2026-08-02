@@ -9,11 +9,40 @@ import { createDeliveryCapture, createKoishiTestHarness, qqQuotedCommand, type K
 
 const harnesses: KoishiTestHarness[] = []
 
+const activityWithAccess = {
+  name: 'test-activity-with-access',
+  apply(ctx: any, config: any) {
+    access.apply(ctx, config.access)
+    return ctx.inject(['access'], (injected: any) => activity.apply(injected, config.activity))
+  },
+}
+
 afterEach(async () => {
   await Promise.all(harnesses.splice(0).map(harness => harness.stop()))
 })
 
 describe('standalone plugin command smoke behaviors', () => {
+  it('keeps Activity public while Access separates administrator reads from writes', async () => {
+    const harness = await createKoishiTestHarness(activityWithAccess, {
+      access: { administrators: [{ qq: '10001' }], managementGroups: [{ qq: '20001' }] },
+      activity: { notificationUsers: [], notificationGroups: [] },
+    })
+    harnesses.push(harness)
+    const ordinary = await harness.client({ userId: '10002', channelId: 'unlisted' })
+    const privateOrdinary = await harness.client({ userId: '10003' })
+    const administrator = await harness.client({ userId: '10001', channelId: 'unlisted' })
+    const privateAdministrator = await harness.client({ userId: '10001' })
+
+    await expect(ordinary.receive('activity')).resolves.toEqual(['暂无即将开始或进行中的活动。'])
+    await expect(privateOrdinary.receive('activity')).resolves.toEqual(['暂无即将开始或进行中的活动。'])
+    await expect(ordinary.receive('activity.history')).resolves.toEqual(['你不是管理员。'])
+    await expect(administrator.receive('activity.history')).resolves.toEqual(['暂无历史活动。'])
+    await expect(administrator.receive('activity.cancel 1')).resolves.toEqual([
+      '此群不是管理群，请私聊操作或先添加该群。',
+    ])
+    await expect(privateAdministrator.receive('activity.cancel 1')).resolves.toEqual(['活动不存在'])
+  })
+
   it('lists persistent Access sets only for authorized readers', async () => {
     const harness = await createKoishiTestHarness(access, {
       administrators: [{ qq: '10001' }], managementGroups: [{ qq: '20001' }],
@@ -87,7 +116,10 @@ describe('standalone plugin command smoke behaviors', () => {
   })
 
   it('loads activity and lists activities through a Mock session', async () => {
-    const harness = await createKoishiTestHarness(activity, {})
+    const harness = await createKoishiTestHarness(activityWithAccess, {
+      access: { administrators: [], managementGroups: [] },
+      activity: { notificationUsers: [], notificationGroups: [] },
+    })
     harnesses.push(harness)
 
     const client = await harness.client({ userId: '10001', channelId: '20001' })
@@ -97,8 +129,9 @@ describe('standalone plugin command smoke behaviors', () => {
   })
 
   it('drives guided Activity creation with an explicit save-only choice', async () => {
-    const harness = await createKoishiTestHarness(activity, {
-      administrators: [{ qq: '10001' }], managementGroups: [], notificationUsers: [{ qq: '30001' }], notificationGroups: [],
+    const harness = await createKoishiTestHarness(activityWithAccess, {
+      access: { administrators: [{ qq: '10001' }], managementGroups: [{ qq: '20001' }] },
+      activity: { notificationUsers: [{ qq: '30001' }], notificationGroups: [] },
     })
     harnesses.push(harness)
     const client = await harness.client({ userId: '10001', channelId: '20001' })

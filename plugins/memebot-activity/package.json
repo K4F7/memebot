@@ -1,6 +1,6 @@
 {
   "name": "koishi-plugin-memebot-activity",
-  "version": "0.1.1-alpha.3",
+  "version": "0.1.1-alpha.4",
   "description": "自用，社团活动登记、查询与广播插件",
   "license": "MIT",
   "main": "lib/index.js",
@@ -23,6 +23,9 @@
   },
   "peerDependencies": {
     "koishi": "^4.18.7"
+  },
+  "dependencies": {
+    "koishi-plugin-memebot-access": "workspace:^"
   },
   "devDependencies": {
     "koishi": "^4.18.7",
