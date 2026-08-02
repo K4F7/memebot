@@ -1,3 +1,4 @@
+import { resolve } from 'node:path'
 import { Context, Schema, Session } from 'koishi'
 
 export const name = 'memebot-access'
@@ -15,6 +16,11 @@ export interface AccessManagementGroup {
 
 export interface AccessInitialization {
   id: string
+}
+
+export interface AccessSnapshot {
+  administrators: string[]
+  managementGroups: string[]
 }
 
 declare module 'koishi' {
@@ -103,6 +109,13 @@ export class AccessService {
   async listManagementGroups() {
     const records = await this.ctx.database.get('memebotAccessManagementGroup', {})
     return records.map(record => record.qq).sort()
+  }
+
+  async snapshot(): Promise<AccessSnapshot> {
+    return {
+      administrators: await this.listExplicitAdministrators(),
+      managementGroups: await this.listManagementGroups(),
+    }
   }
 
   async isAdministrator(session: AccessSession) {
@@ -228,6 +241,27 @@ function registerAccessCommands(ctx: Context, service: AccessService) {
   })
 }
 
+function registerAccessConsole(ctx: Context, service: AccessService) {
+  const consoleService = ctx.get('console')
+  if (!consoleService?.addListener) return
+  consoleService.addEntry?.({
+    dev: resolve(__dirname, '../client/index.ts'),
+    prod: resolve(__dirname, '../dist'),
+  })
+  // Koishi Auth treats authority 1 as any authenticated Console account.
+  // Without Auth installed, Console deliberately leaves this surface open.
+  const authenticated = { authority: 1 }
+  const mutate = (operation: (qq: string) => Promise<unknown>) => async (qq: string) => {
+    await operation(qq)
+    return service.snapshot()
+  }
+  consoleService.addListener('memebot/access/list', () => service.snapshot(), authenticated)
+  consoleService.addListener('memebot/access/admin/add', mutate(qq => service.addExplicitAdministrator(qq)), authenticated)
+  consoleService.addListener('memebot/access/admin/remove', mutate(qq => service.removeExplicitAdministrator(qq)), authenticated)
+  consoleService.addListener('memebot/access/group/add', mutate(qq => service.addManagementGroup(qq)), authenticated)
+  consoleService.addListener('memebot/access/group/remove', mutate(qq => service.removeManagementGroup(qq)), authenticated)
+}
+
 export function apply(ctx: Context, config: Config) {
   const settings: Config = {
     administrators: [],
@@ -238,6 +272,7 @@ export function apply(ctx: Context, config: Config) {
   const service = new AccessService(ctx)
   ctx.provide('access', service)
   registerAccessCommands(ctx, service)
+  registerAccessConsole(ctx, service)
   ctx.on('ready', () => service.initialize(settings))
 }
 
