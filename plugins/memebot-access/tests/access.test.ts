@@ -143,6 +143,12 @@ describe('Access decisions', () => {
     })
 
     await access.removeManagementGroup('20001')
+    await expect(access.authorizeRead({
+      userId: '10001', guildId: 'unlisted', user: { authority: 1 },
+    })).resolves.toEqual({ allowed: true })
+    await expect(access.authorizeWrite({
+      userId: '10001', user: { authority: 1 },
+    })).resolves.toEqual({ allowed: true })
     await expect(access.authorizeWrite({
       userId: 'authority-four', guildId: '20001', user: { authority: 4 },
     })).resolves.toMatchObject({ allowed: false, reason: 'location' })
