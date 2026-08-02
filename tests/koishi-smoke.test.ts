@@ -30,6 +30,19 @@ const faqWithAccess = {
   },
 }
 
+const intakeWithAccess = {
+  name: 'test-intake-with-access',
+  apply(ctx: any, config: any) {
+    const result: { service?: any } = {}
+    access.apply(ctx, config.access)
+    ctx.inject(['access'], (injected: any) => {
+      intake.apply(injected, config.intake)
+      result.service = injected.intake
+    })
+    return result
+  },
+}
+
 afterEach(async () => {
   await Promise.all(harnesses.splice(0).map(harness => harness.stop()))
 })
@@ -308,7 +321,9 @@ describe('standalone plugin command smoke behaviors', () => {
   })
 
   it('loads intake and invokes an administrator command through a Mock session', async () => {
-    const harness = await createKoishiTestHarness(intake, {})
+    const harness = await createKoishiTestHarness(intakeWithAccess, {
+      access: { administrators: [], managementGroups: [{ qq: '20001' }] }, intake: {},
+    })
     harnesses.push(harness)
 
     const client = await harness.client({ userId: '10004', channelId: '20001', authority: 4 })
@@ -317,11 +332,47 @@ describe('standalone plugin command smoke behaviors', () => {
     await expect(member.receive('feedback')).resolves.toEqual(['此类型尚未配置通知目标，暂时无法开始收集。'])
   })
 
+  it('uses Access for Intake reads, writes, self-claim, and transfer targets', async () => {
+    const harness = await createKoishiTestHarness(intakeWithAccess, {
+      access: { administrators: [{ qq: '10001' }, { qq: '10002' }], managementGroups: [{ qq: '20001' }] },
+      intake: {},
+    })
+    harnesses.push(harness)
+    const service = (harness.pluginResult as any).service
+    await service.create({ type: 'feedback', submitterId: '10006', sourceSession: 'qq:u1', body: '反馈', attachments: [] })
+    await service.create({ type: 'suggestion', submitterId: '10007', sourceSession: 'qq:u2', body: '建议', attachments: [] })
+
+    const member = await harness.client({ userId: '10006', channelId: 'unlisted' })
+    await expect(member.receive('intake')).resolves.toEqual(['反馈#1 pending'])
+    const administrator = await harness.client({ userId: '10001', channelId: 'unlisted' })
+    await expect(administrator.receive('intake')).resolves.toEqual([
+      expect.stringContaining('反馈#1 pending'),
+    ])
+    await expect(administrator.receive('intake.admin.list')).resolves.toEqual([
+      expect.stringContaining('[反馈#1]'),
+    ])
+    await expect(administrator.receive('intake.admin.claim 反馈#1')).resolves.toEqual([
+      '此群不是管理群，请私聊操作或先添加该群。',
+    ])
+
+    const implicitAdministrator = await harness.client({ userId: '40001', authority: 4 })
+    await expect(implicitAdministrator.receive('intake.admin.claim 反馈#1')).resolves.toEqual([
+      expect.stringContaining('认领人 QQ: 40001'),
+    ])
+    await expect(implicitAdministrator.receive('intake.admin.transfer 反馈#1 40002')).resolves.toEqual([
+      '转交目标必须是已持久化的显式管理员 QQ。',
+    ])
+    await expect(implicitAdministrator.receive('intake.admin.transfer 反馈#1 10002')).resolves.toEqual([
+      expect.stringContaining('认领人 QQ: 10002'),
+    ])
+  })
+
   it('captures ordinary replies and configured broadcasts from a Mock command', async () => {
-    const harness = await createKoishiTestHarness(intake, {
-      targets: {
+    const harness = await createKoishiTestHarness(intakeWithAccess, {
+      access: { administrators: [], managementGroups: [] },
+      intake: { targets: {
         feedback: { users: [{ qq: '30001' }], groups: [{ qq: '40001' }] },
-      },
+      } },
     })
     harnesses.push(harness)
     await harness.registerBroadcastTargets(['qq:30001', 'qq:40001'])
@@ -356,9 +407,9 @@ describe('standalone plugin command smoke behaviors', () => {
   })
 
   it('authorizes quoted Intake claims and exact work-state actions through persisted message IDs', async () => {
-    const harness = await createKoishiTestHarness(intake, {
-      targets: { feedback: { users: [{ qq: '30001' }], groups: [] } },
-      administrators: [{ qq: '10001' }, { qq: '10002' }], managementGroups: [],
+    const harness = await createKoishiTestHarness(intakeWithAccess, {
+      access: { administrators: [{ qq: '10001' }, { qq: '10002' }], managementGroups: [{ qq: '20001' }] },
+      intake: { targets: { feedback: { users: [{ qq: '30001' }], groups: [] } } },
     })
     harnesses.push(harness)
     await harness.registerBroadcastTargets(['qq:30001', 'qq:10006'])
@@ -368,7 +419,7 @@ describe('standalone plugin command smoke behaviors', () => {
     const messageId = mappings[0].messageId
 
     const stranger = await harness.client({ userId: '10003', channelId: '20001' })
-    await expect(stranger.receive(qqQuotedCommand(messageId, '管理通知', '认领'))).resolves.toEqual(['没有权限。'])
+    await expect(stranger.receive(qqQuotedCommand(messageId, '管理通知', '认领'))).resolves.toEqual(['你不是管理员。'])
     const first = await harness.client({ userId: '10001', channelId: '20001' })
     await expect(first.receive(qqQuotedCommand(messageId, '管理通知', '认领'))).resolves.toEqual(['已认领 反馈#1。'])
     const second = await harness.client({ userId: '10002', channelId: '20001' })
