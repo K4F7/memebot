@@ -1,5 +1,5 @@
 import { Context, send } from '@koishijs/client'
-import { defineComponent, h, onMounted, ref } from 'vue'
+import { defineComponent, h, onMounted, ref, resolveComponent } from 'vue'
 
 interface Paper { id: string; title: string; issueNumber: string; month: string; description?: string; sourceLink?: string; backupState?: string; attachment?: { relativePath: string; size: number; checksum: string } }
 interface Work { id: string; title: string; author: string; description?: string; backupState?: string; attachment?: { relativePath: string; size: number; checksum: string } }
@@ -17,6 +17,7 @@ interface Health { state: 'ready' | 'degraded' | 'unavailable'; lastCheck: strin
 const ArchivePage = defineComponent({
   name: 'MemebotArchive',
   setup() {
+    const Layout = resolveComponent('k-layout')
     const tab = ref<'paper' | 'work'>('paper')
     const health = ref<Health>()
     const papers = ref<Paper[]>([]); const works = ref<Work[]>([]); const query = ref('')
@@ -169,9 +170,9 @@ const ArchivePage = defineComponent({
       retired.value.length > 0 && h('details', [h('summary', `可恢复的旧附件版本（${retired.value.length}）`), h('ul', retired.value.map(item => h('li', { key: item.id }, [`${item.recordId} ${item.attachment.relativePath} · 到期 ${item.expiresAt} `, h('button', { onClick: () => restoreAttachment(item) }, '恢复此版本')])))]),
       lifecycleHistory.value.length > 0 && h('details', [h('summary', '生命周期审计'), h('ul', lifecycleHistory.value.map(item => h('li', { key: item.id }, `${item.createdAt} ${item.actor} ${item.action} ${item.recordId}`)))]),
     ])
-    return () => h('main', { style: 'padding:24px;display:grid;gap:20px' }, [
+    return () => h(Layout, { main: 'page-memebot-archive' }, { default: () => h('div', { role: 'main', style: 'height:100%;box-sizing:border-box;overflow:auto;padding:24px;display:grid;gap:20px' }, [
       h('h1', 'Archive 归档'), status(), lifecycleNode(), restoreNode(), error.value && h('p', { style: 'color:#c33' }, error.value),
-      h('nav', { style: 'display:flex;gap:8px' }, [h('button', { disabled: tab.value === 'paper', onClick: async () => { tab.value = 'paper'; query.value = ''; await load() } }, 'Paper'), h('button', { disabled: tab.value === 'work', onClick: async () => { tab.value = 'work'; query.value = ''; await load() } }, 'Work')]),
+      h('div', { role: 'tablist', 'aria-label': 'Archive 类型', style: 'display:flex;gap:8px' }, [h('button', { role: 'tab', 'aria-selected': tab.value === 'paper', disabled: tab.value === 'paper', onClick: async () => { tab.value = 'paper'; query.value = ''; await load() } }, 'Paper'), h('button', { role: 'tab', 'aria-selected': tab.value === 'work', disabled: tab.value === 'work', onClick: async () => { tab.value = 'work'; query.value = ''; await load() } }, 'Work')]),
       h('section', { style: 'display:flex;gap:8px' }, [h('input', { placeholder: tab.value === 'paper' ? '月份、期号、标题或描述' : '标题、作者或描述', value: query.value, onInput: (event: Event) => query.value = (event.target as HTMLInputElement).value }), h('button', { onClick: load }, '搜索')]),
       h('section', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px' }, [
         input('标题', title), ...(tab.value === 'paper' ? [input('期号', issueNumber), input('月份（YYYY-MM）', month), input('来源链接', sourceLink, 'url')] : [input('作者', author)]), input('描述', description),
@@ -182,7 +183,7 @@ const ArchivePage = defineComponent({
       paperPreview.value && h('iframe', { src: paperPreview.value, title: 'Paper PDF 预览', style: 'width:100%;height:70vh;border:1px solid #ddd' }),
       selectedPaper.value && h('section', [h('h2', `${selectedPaper.value.paper.id} 收录作品`), h('ul', selectedPaper.value.works.map(item => h('li', { key: item.work.id }, [`${item.work.id} ${item.work.author} - ${item.work.title}${item.page ? ` · 第${item.page}页` : ''}${item.section ? ` · ${item.section}` : ''} `, h('button', { onClick: () => removeAppearance(selectedPaper.value!.paper, item.work.id) }, '移除关联')])))]),
       selectedWork.value && h('section', [h('h2', `${selectedWork.value.id} 文件树`), workPapers.value.length > 0 && h('p', `刊载于：${workPapers.value.map(item => `${item.paper.id} ${item.paper.title}${item.page ? `（第${item.page}页）` : ''}${item.section ? `（${item.section}）` : ''}`).join('；')}`), h('ul', tree.value.map(entry => h('li', { key: entry.path }, [h('button', { disabled: !entry.previewable, onClick: () => previewFile(entry) }, entry.path), ` (${entry.kind}, ${entry.size} bytes) `, h('button', { onClick: () => downloadTreeFile(entry) }, '下载')]))), previewNode()]),
-    ])
+    ]) })
   },
 })
 
