@@ -178,3 +178,44 @@ describe('Access decisions', () => {
     })
   })
 })
+
+describe('Access Console', () => {
+  it('registers login-gated listeners that manage only persistent Access sets', async () => {
+    const entries: unknown[] = []
+    const listeners = new Map<string, { handler: (...args: any[]) => Promise<any>; options?: { authority?: number } }>()
+    const ctx = new Context()
+    contexts.push(ctx)
+    ctx.plugin(memory)
+    ctx.reflect.provide('console', {
+      addEntry(entry: unknown) { entries.push(entry) },
+      addListener(name: string, handler: (...args: any[]) => Promise<any>, options?: { authority?: number }) {
+        listeners.set(name, { handler, options })
+      },
+    })
+    ctx.plugin(accessPlugin, {
+      administrators: [{ qq: '10001' }],
+      managementGroups: [{ qq: '20001' }],
+    })
+    await ctx.start()
+
+    expect(entries).toHaveLength(1)
+    expect([...listeners.keys()].sort()).toEqual([
+      'memebot/access/admin/add',
+      'memebot/access/admin/remove',
+      'memebot/access/group/add',
+      'memebot/access/group/remove',
+      'memebot/access/list',
+    ])
+    for (const listener of listeners.values()) expect(listener.options).toEqual({ authority: 1 })
+
+    await expect(listeners.get('memebot/access/list')!.handler()).resolves.toEqual({
+      administrators: ['10001'], managementGroups: ['20001'],
+    })
+    await expect(listeners.get('memebot/access/admin/add')!.handler('10002')).resolves.toMatchObject({
+      administrators: ['10001', '10002'],
+    })
+    await expect(listeners.get('memebot/access/group/remove')!.handler('20001')).resolves.toMatchObject({
+      managementGroups: [],
+    })
+  })
+})
