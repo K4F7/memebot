@@ -4165,6 +4165,7 @@ __metadata:
     "@koishijs/client": "npm:^5.30.11"
     "@playwright/test": "npm:^1.62.1"
     koishi: "npm:^4.18.7"
+    koishi-plugin-memebot-access: "workspace:^"
     typescript: "npm:^5.6.2"
     vite: "npm:^5.4.10"
     vitest: "npm:^3.2.4"

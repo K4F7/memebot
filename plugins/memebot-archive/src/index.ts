@@ -2,17 +2,16 @@ import { createHash } from 'node:crypto'
 import { access, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 import { Context, h, Schema } from 'koishi'
+import type { AccessDecision, AccessSession } from 'koishi-plugin-memebot-access'
 import { ArchivePreflight, BackupContext, BackupStatusSink, PersistentArchiveBackupQueue, PersistentArchiveCleanupQueue, WorkPreviewStore } from './extensions'
 import { S3R2Store } from './s3'
 
 export { ArchivePreflight, PersistentArchiveBackupQueue, PersistentArchiveCleanupQueue, WorkPreviewStore } from './extensions'
 
 export const name = 'memebot-archive'
-export const inject = ['database', 'console']
+export const inject = ['database', 'console', 'access']
 
 export interface Config {
-  administrators: Array<{ qq: string }>
-  managementGroups: Array<{ qq: string }>
   localPath: string
   paperMaxMb: number
   workMaxMb: number
@@ -26,11 +25,7 @@ export interface Config {
   }
 }
 
-const qqTable = () => Schema.array(Schema.object({ qq: Schema.string().description('QQ 号') }))
-
 export const Config: Schema<Config> = Schema.object({
-  administrators: qqTable().default([]).description('显式授权的管理员 QQ'),
-  managementGroups: qqTable().default([]).description('允许执行管理动作的 QQ 群'),
   localPath: Schema.string().default('data/memebot-archive').description('附件本地存储目录'),
   paperMaxMb: Schema.number().default(100).min(1).description('Paper PDF 最大大小（MB）'),
   workMaxMb: Schema.number().default(500).min(1).description('Work ZIP 最大大小（MB）'),
@@ -656,6 +651,9 @@ export class ImmediateArchiveBackupQueue implements ArchiveBackupQueue {
 }
 
 export class ArchiveService {
+  // User-facing entry points authorize once through Access or Console before
+  // entering this trusted domain layer, so an admitted interaction can finish
+  // even if authorization changes while it is running.
   readonly db: ArchiveDatabase
   readonly local: LocalAttachmentStore
   readonly config: Config
@@ -673,7 +671,7 @@ export class ArchiveService {
 
   constructor(options: { config?: Partial<Config>; db?: Partial<ArchiveDatabase>; local?: LocalAttachmentStore; r2?: R2Store; metadata?: ArchiveMetadataRepository; backupQueue?: ArchiveBackupQueue; cleanupQueue?: ArchiveCleanupQueue; previews?: WorkPreviewStore; now?: () => Date }) {
     this.config = {
-      administrators: [], managementGroups: [], localPath: 'data/memebot-archive', paperMaxMb: 100, workMaxMb: 500,
+      localPath: 'data/memebot-archive', paperMaxMb: 100, workMaxMb: 500,
       r2: { enabled: false, accountId: '', bucketName: '', accessKeyId: '', secretAccessKey: '', objectPrefix: 'memebot-archive' },
       ...options.config,
     }
@@ -698,18 +696,11 @@ export class ArchiveService {
     this.db.retiredAttachments.splice(0, this.db.retiredAttachments.length, ...retiredAttachments)
   }
 
-  isAdmin(session: ArchiveSession): boolean {
-    const identity = (session.authority ?? 0) >= 4 || (!!session.userId && this.config.administrators.some(item => item.qq === session.userId))
-    const location = !session.guildId || !this.config.managementGroups.length || this.config.managementGroups.some(item => item.qq === session.guildId)
-    return identity && location
-  }
-
   private id(prefix: 'P' | 'W') { return prefix === 'P' ? `P${++this.paperSequence}` : `W${++this.workSequence}` }
   previewIssue(input: IssueInput) { return { ...input, kind: 'Newspaper Issue' as const, preview: true } }
   previewWork(input: WorkInput) { return { ...input, kind: 'Work' as const, preview: true } }
 
   async publishIssue(session: ArchiveSession, input: IssueInput): Promise<NewspaperIssue> {
-    this.requireAdmin(session)
     const validated = validatePaperMetadata(input)
     if (!input.attachment) throw new Error('Newspaper Issue PDF attachment required')
     validatePdfAttachment(input.attachment, this.config.paperMaxMb)
@@ -727,7 +718,6 @@ export class ArchiveService {
   }
 
   async publishWork(session: ArchiveSession, input: WorkInput): Promise<Work> {
-    this.requireAdmin(session)
     const validated = validateWorkMetadata(input)
     if (!input.attachment) throw new Error('Work Package ZIP attachment required')
     const data = workBytes(input.attachment, this.config.workMaxMb)
@@ -756,7 +746,6 @@ export class ArchiveService {
     return issue
   }
   async replaceIssueAttachment(session: ArchiveSession, id: string, attachmentInput: AttachmentInput) {
-    this.requireAdmin(session)
     const issue = this.getIssue(id)
     if (!issue) throw new Error('Newspaper Issue not found')
     validatePdfAttachment(attachmentInput, this.config.paperMaxMb)
@@ -781,7 +770,6 @@ export class ArchiveService {
     return work
   }
   async replaceWorkAttachment(session: ArchiveSession, id: string, attachmentInput: AttachmentInput) {
-    this.requireAdmin(session)
     const work = this.getWork(id)
     if (!work) throw new Error('Work not found')
     const data = workBytes(attachmentInput, this.config.workMaxMb)
@@ -819,7 +807,6 @@ export class ArchiveService {
   }
 
   listRemoved(session: ArchiveSession) {
-    this.requireAdmin(session)
     return [
       ...this.db.issues.filter(item => item.lifecycle === 'removed' || item.lifecycle === 'purged').map(item => ({ kind: 'paper' as const, id: item.id, title: item.title, lifecycle: item.lifecycle, removedAt: item.removedAt, expiresAt: item.expiresAt, purgedAt: item.purgedAt })),
       ...this.db.works.filter(item => item.lifecycle === 'removed' || item.lifecycle === 'purged').map(item => ({ kind: 'work' as const, id: item.id, title: item.title, author: item.author, lifecycle: item.lifecycle, removedAt: item.removedAt, expiresAt: item.expiresAt, purgedAt: item.purgedAt })),
@@ -827,7 +814,6 @@ export class ArchiveService {
   }
 
   async restoreRecord(session: ArchiveSession, id: string) {
-    this.requireAdmin(session)
     const item = id.toUpperCase().startsWith('P')
       ? this.db.issues.find(value => value.id.localeCompare(id, undefined, { sensitivity: 'base' }) === 0 && value.lifecycle === 'removed')
       : this.db.works.find(value => value.id.localeCompare(id, undefined, { sensitivity: 'base' }) === 0 && value.lifecycle === 'removed')
@@ -863,18 +849,15 @@ export class ArchiveService {
   }
 
   async lifecycleHistory(session: ArchiveSession, recordId?: string) {
-    this.requireAdmin(session)
     const history = await this.metadata?.loadLifecycleAudit() ?? []
     return recordId ? history.filter(item => item.recordId.localeCompare(recordId, undefined, { sensitivity: 'base' }) === 0) : history
   }
 
   listRetiredAttachments(session: ArchiveSession, recordId?: string) {
-    this.requireAdmin(session)
     return this.db.retiredAttachments.filter(item => item.lifecycle === 'retired' && (!recordId || item.recordId.localeCompare(recordId, undefined, { sensitivity: 'base' }) === 0)).sort((a, b) => b.removedAt.getTime() - a.removedAt.getTime() || a.id.localeCompare(b.id))
   }
 
   async restoreRetiredAttachment(session: ArchiveSession, retiredId: string) {
-    this.requireAdmin(session)
     const retired = this.db.retiredAttachments.find(item => item.id === retiredId && item.lifecycle === 'retired')
     if (!retired || retired.expiresAt <= this.now()) throw new Error('Retired attachment not found or expired')
     const item = retired.recordKind === 'paper' ? this.getIssue(retired.recordId) : this.getWork(retired.recordId)
@@ -927,7 +910,7 @@ export class ArchiveService {
     item.attachment = undefined; item.lifecycle = 'purged'; item.purgedAt = this.now(); item.updatedAt = item.purgedAt
     if (kind === 'paper') await this.metadata?.updatePaper(item as NewspaperIssue)
     else await this.metadata?.updateWork(item as Work)
-    await this.appendLifecycleAudit({ userId: actor, authority: 4 }, kind, item.id, 'purge')
+    await this.appendLifecycleAudit({ userId: actor }, kind, item.id, 'purge')
     if (this.cleanupQueue?.runDue) await this.cleanupQueue.runDue()
     return item
   }
@@ -975,7 +958,6 @@ export class ArchiveService {
   }
 
   async associateWork(session: ArchiveSession, paperId: string, input: AppearanceInput) {
-    this.requireAdmin(session)
     const paper = this.getIssue(paperId)
     if (!paper) throw new Error('Paper not found')
     if (!!input.workId === !!input.work) throw new Error('请选择现有 Work 或创建一个完整新 Work')
@@ -998,7 +980,6 @@ export class ArchiveService {
   }
 
   async removeAppearance(session: ArchiveSession, paperId: string, workId: string) {
-    this.requireAdmin(session)
     const index = this.db.appearances.findIndex(item => item.paperId === paperId && item.workId === workId)
     if (index < 0) throw new Error('Publication Appearance not found')
     this.db.appearances.splice(index, 1)
@@ -1049,7 +1030,6 @@ export class ArchiveService {
   }
 
   async previewRestore(session: ArchiveSession) {
-    this.requireAdmin(session)
     const auditBase = { actor: session.userId ?? `authority:${session.authority ?? 0}`, action: 'preview' as const }
     try {
       const preview = await this.buildRestorePreview(await this.readRemoteManifests())
@@ -1089,7 +1069,6 @@ export class ArchiveService {
   }
 
   async restoreFromR2(session: ArchiveSession, selections: RestoreSelection[] = []) {
-    this.requireAdmin(session)
     if (!this.metadata) throw new Error('restore requires persistent archive metadata')
     const auditBase = { actor: session.userId ?? `authority:${session.authority ?? 0}`, action: 'restore' as const }
     let staged: Array<Awaited<ReturnType<LocalAttachmentStore['stageRestore']>>> = []
@@ -1150,7 +1129,6 @@ export class ArchiveService {
   }
 
   async restoreHistory(session: ArchiveSession) {
-    this.requireAdmin(session)
     return this.metadata?.loadRestoreAudit() ?? []
   }
 
@@ -1253,8 +1231,7 @@ export class ArchiveService {
     this.fallbackEvents.push({ id: item.id, kind, reason: 'forward-message unavailable or failed' })
     return sender.ordinary(session, item)
   }
-  requireAdmin(session: ArchiveSession) { if (!this.isAdmin(session)) throw new Error('archive administrator permission required') }
-  private requireConfirmation(session: ArchiveSession, confirmation?: string) { this.requireAdmin(session); if (confirmation !== 'Y') throw new Error('confirmation requires exact Y') }
+  private requireConfirmation(_session: ArchiveSession, confirmation?: string) { if (confirmation !== 'Y') throw new Error('confirmation requires exact Y') }
   private remove<T extends { id: string }>(items: T[], id: string, label: string) { const index = items.findIndex(item => item.id === id); if (index < 0) throw new Error(`${label} not found`); return items.splice(index, 1)[0] }
   private async enqueueBackup(kind: ArchiveRecordKind, item: NewspaperIssue | Work) {
     if (!item.attachment || !this.backupQueue) return
@@ -1278,6 +1255,26 @@ function commandSession(session: any): ArchiveSession {
   }
 }
 
+function accessSession(session: any): AccessSession {
+  return {
+    userId: session?.userId,
+    guildId: session?.guildId,
+    channelId: session?.channelId,
+    user: { authority: session?.authority ?? session?.user?.authority },
+  }
+}
+
+export async function authorizeArchiveSession(ctx: Pick<Context, 'access'>, session: any, action: 'read' | 'write'): Promise<AccessDecision> {
+  return action === 'read'
+    ? ctx.access.authorizeRead(accessSession(session))
+    : ctx.access.authorizeWrite(accessSession(session))
+}
+
+async function archiveAccessDenial(ctx: Pick<Context, 'access'>, session: any, action: 'read' | 'write') {
+  const decision = await authorizeArchiveSession(ctx, session, action)
+  return decision.allowed ? undefined : decision.message
+}
+
 function payload(value: string | undefined): any {
   if (!value) throw new Error('请输入 JSON 元数据。')
   try { return JSON.parse(value) } catch { throw new Error('元数据必须是合法 JSON。') }
@@ -1299,27 +1296,33 @@ export class ArchiveConsoleFeatures {
     private readonly queue?: ArchiveBackupQueue,
   ) {}
   register() {
-    const consoleService = (this.ctx as any).console
+    const consoleService = this.ctx.get('console')
     if (!consoleService?.addListener) return
     consoleService.addEntry?.({ dev: resolve(__dirname, '../client/index.ts'), prod: resolve(__dirname, '../dist') })
+    // Auth authority 1 means any authenticated Console account. When Auth is absent,
+    // Console deliberately leaves the surface open as the deployment boundary.
+    const authenticated = { authority: 1 }
+    // Console has no specified account-to-QQ mapping. This value labels domain
+    // audit entries only; the listener middleware above is the authorization.
+    const consoleActor: ArchiveSession = { userId: 'console' }
     consoleService.addListener('memebot/archive/status', async () => {
       const health = this.preflight ? await this.preflight.check() : { state: 'ready' as const, lastCheck: new Date().toISOString(), stores: { local: { ok: true }, r2: { enabled: false } } }
       const queue = this.queue?.counts ? await this.queue.counts() : { pending: 0, failed: 0, complete: 0 }
       try { await this.ready; return { ...health, queue } } catch (error) { return { ...health, state: 'unavailable', error: error instanceof Error ? error.message : String(error), queue } }
-    })
-    consoleService.addListener('memebot/archive/recheck', async () => this.preflight?.check(), { authority: 4 })
-    consoleService.addListener('memebot/archive/backup/retry', async (recordId?: string) => { await this.queue?.retryNow?.(recordId); return this.queue?.counts?.() }, { authority: 4 })
-    consoleService.addListener('memebot/archive/papers', async (query?: string) => { await this.ready; return this.service.searchIssues(query) })
-    consoleService.addListener('memebot/archive/paper/details', async (id: string) => { await this.ready; return this.service.getPaperDetails(id) })
+    }, authenticated)
+    consoleService.addListener('memebot/archive/recheck', async () => this.preflight?.check(), authenticated)
+    consoleService.addListener('memebot/archive/backup/retry', async (recordId?: string) => { await this.queue?.retryNow?.(recordId); return this.queue?.counts?.() }, authenticated)
+    consoleService.addListener('memebot/archive/papers', async (query?: string) => { await this.ready; return this.service.searchIssues(query) }, authenticated)
+    consoleService.addListener('memebot/archive/paper/details', async (id: string) => { await this.ready; return this.service.getPaperDetails(id) }, authenticated)
     consoleService.addListener('memebot/archive/paper/create', async (input: IssueInput) => {
       await this.ready
-      return this.service.publishIssue({ authority: 4 }, { ...input, attachment: input.attachment && decodeConsoleAttachment(input.attachment) })
-    }, { authority: 4 })
-    consoleService.addListener('memebot/archive/paper/edit', async (id: string, patch: Partial<IssueInput>) => { await this.ready; return this.service.updateIssue({ authority: 4 }, id, patch, 'Y') }, { authority: 4 })
+      return this.service.publishIssue(consoleActor, { ...input, attachment: input.attachment && decodeConsoleAttachment(input.attachment) })
+    }, authenticated)
+    consoleService.addListener('memebot/archive/paper/edit', async (id: string, patch: Partial<IssueInput>) => { await this.ready; return this.service.updateIssue(consoleActor, id, patch, 'Y') }, authenticated)
     consoleService.addListener('memebot/archive/paper/upload', async (id: string, attachment: AttachmentInput) => {
       await this.ready
-      return this.service.replaceIssueAttachment({ authority: 4 }, id, decodeConsoleAttachment(attachment))
-    }, { authority: 4 })
+      return this.service.replaceIssueAttachment(consoleActor, id, decodeConsoleAttachment(attachment))
+    }, authenticated)
     const attachment = async (id: string) => {
       await this.ready
       const paper = this.service.getIssue(id)
@@ -1327,50 +1330,50 @@ export class ArchiveConsoleFeatures {
       const data = await this.service.recover(paper)
       return { filename: paper.attachment.relativePath.split('/').pop(), contentType: paper.attachment.contentType, data: Buffer.from(data!).toString('base64') }
     }
-    consoleService.addListener('memebot/archive/paper/preview', attachment)
-    consoleService.addListener('memebot/archive/paper/download', attachment)
-    consoleService.addListener('memebot/archive/works', async (query?: string) => { await this.ready; return this.service.searchWorks({ text: query }) })
-    consoleService.addListener('memebot/archive/work/details', async (id: string) => { await this.ready; return this.service.getWorkDetails(id) })
+    consoleService.addListener('memebot/archive/paper/preview', attachment, authenticated)
+    consoleService.addListener('memebot/archive/paper/download', attachment, authenticated)
+    consoleService.addListener('memebot/archive/works', async (query?: string) => { await this.ready; return this.service.searchWorks({ text: query }) }, authenticated)
+    consoleService.addListener('memebot/archive/work/details', async (id: string) => { await this.ready; return this.service.getWorkDetails(id) }, authenticated)
     consoleService.addListener('memebot/archive/work/create', async (input: WorkInput) => {
       await this.ready
-      return this.service.publishWork({ authority: 4 }, { ...input, attachment: input.attachment && decodeConsoleAttachment(input.attachment) })
-    }, { authority: 4 })
-    consoleService.addListener('memebot/archive/work/edit', async (id: string, patch: Partial<WorkInput>) => { await this.ready; return this.service.updateWork({ authority: 4 }, id, patch, 'Y') }, { authority: 4 })
-    consoleService.addListener('memebot/archive/work/upload', async (id: string, input: AttachmentInput) => { await this.ready; return this.service.replaceWorkAttachment({ authority: 4 }, id, decodeConsoleAttachment(input)) }, { authority: 4 })
+      return this.service.publishWork(consoleActor, { ...input, attachment: input.attachment && decodeConsoleAttachment(input.attachment) })
+    }, authenticated)
+    consoleService.addListener('memebot/archive/work/edit', async (id: string, patch: Partial<WorkInput>) => { await this.ready; return this.service.updateWork(consoleActor, id, patch, 'Y') }, authenticated)
+    consoleService.addListener('memebot/archive/work/upload', async (id: string, input: AttachmentInput) => { await this.ready; return this.service.replaceWorkAttachment(consoleActor, id, decodeConsoleAttachment(input)) }, authenticated)
     const activeWork = (id: string) => { const work = this.service.getWork(id); if (!work) throw new Error('Work 不存在或已移除'); return work }
-    consoleService.addListener('memebot/archive/work/tree', async (id: string) => { await this.ready; activeWork(id); const tree = await this.service.previews.tree(id); return tree.length ? tree : this.service.rebuildWorkPreview(id) })
-    consoleService.addListener('memebot/archive/work/preview', async (id: string, path: string) => { await this.ready; activeWork(id); return this.service.previews.preview(id, path) })
-    consoleService.addListener('memebot/archive/work/file', async (id: string, path: string) => { await this.ready; activeWork(id); const data = await this.service.previews.download(id, path); return { filename: path.split('/').pop(), data: Buffer.from(data).toString('base64') } })
+    consoleService.addListener('memebot/archive/work/tree', async (id: string) => { await this.ready; activeWork(id); const tree = await this.service.previews.tree(id); return tree.length ? tree : this.service.rebuildWorkPreview(id) }, authenticated)
+    consoleService.addListener('memebot/archive/work/preview', async (id: string, path: string) => { await this.ready; activeWork(id); return this.service.previews.preview(id, path) }, authenticated)
+    consoleService.addListener('memebot/archive/work/file', async (id: string, path: string) => { await this.ready; activeWork(id); const data = await this.service.previews.download(id, path); return { filename: path.split('/').pop(), data: Buffer.from(data).toString('base64') } }, authenticated)
     consoleService.addListener('memebot/archive/work/download', async (id: string) => {
       await this.ready
       const work = this.service.getWork(id); if (!work?.attachment) throw new Error('Work 不存在或没有 ZIP')
       const data = await this.service.recover(work)
       return { filename: work.attachment.relativePath.split('/').pop(), contentType: work.attachment.contentType, data: Buffer.from(data!).toString('base64') }
-    })
-    consoleService.addListener('memebot/archive/appearance/save', async (paperId: string, input: AppearanceInput) => { await this.ready; return this.service.associateWork({ authority: 4 }, paperId, input.work ? { ...input, work: { ...input.work, attachment: input.work.attachment && decodeConsoleAttachment(input.work.attachment) } } : input) }, { authority: 4 })
-    consoleService.addListener('memebot/archive/appearance/remove', async (paperId: string, workId: string) => { await this.ready; await this.service.removeAppearance({ authority: 4 }, paperId, workId) }, { authority: 4 })
-    consoleService.addListener('memebot/archive/restore/preview', async () => { await this.ready; return this.service.previewRestore({ authority: 4 }) }, { authority: 4 })
-    consoleService.addListener('memebot/archive/restore/apply', async (selections?: RestoreSelection[]) => { await this.ready; return this.service.restoreFromR2({ authority: 4 }, selections) }, { authority: 4 })
-    consoleService.addListener('memebot/archive/restore/history', async () => { await this.ready; return this.service.restoreHistory({ authority: 4 }) }, { authority: 4 })
-    consoleService.addListener('memebot/archive/removed', async () => { await this.ready; return this.service.listRemoved({ authority: 4 }) }, { authority: 4 })
+    }, authenticated)
+    consoleService.addListener('memebot/archive/appearance/save', async (paperId: string, input: AppearanceInput) => { await this.ready; return this.service.associateWork(consoleActor, paperId, input.work ? { ...input, work: { ...input.work, attachment: input.work.attachment && decodeConsoleAttachment(input.work.attachment) } } : input) }, authenticated)
+    consoleService.addListener('memebot/archive/appearance/remove', async (paperId: string, workId: string) => { await this.ready; await this.service.removeAppearance(consoleActor, paperId, workId) }, authenticated)
+    consoleService.addListener('memebot/archive/restore/preview', async () => { await this.ready; return this.service.previewRestore(consoleActor) }, authenticated)
+    consoleService.addListener('memebot/archive/restore/apply', async (selections?: RestoreSelection[]) => { await this.ready; return this.service.restoreFromR2(consoleActor, selections) }, authenticated)
+    consoleService.addListener('memebot/archive/restore/history', async () => { await this.ready; return this.service.restoreHistory(consoleActor) }, authenticated)
+    consoleService.addListener('memebot/archive/removed', async () => { await this.ready; return this.service.listRemoved(consoleActor) }, authenticated)
     consoleService.addListener('memebot/archive/record/remove', async (id: string, confirmation: string) => {
       await this.ready
-      if (id.toUpperCase().startsWith('P')) return this.service.removeIssue({ authority: 4 }, id, confirmation)
-      return this.service.removeWork({ authority: 4 }, id, confirmation)
-    }, { authority: 4 })
-    consoleService.addListener('memebot/archive/record/restore', async (id: string) => { await this.ready; return this.service.restoreRecord({ authority: 4 }, id) }, { authority: 4 })
-    consoleService.addListener('memebot/archive/record/purge', async (id: string, confirmation: string) => { await this.ready; return this.service.purgeRecord({ authority: 4 }, id, confirmation) }, { authority: 4 })
-    consoleService.addListener('memebot/archive/record/anonymize', async (id: string, confirmation: string) => { await this.ready; return this.service.anonymizeRecord({ authority: 4 }, id, confirmation) }, { authority: 4 })
-    consoleService.addListener('memebot/archive/attachments/retired', async (recordId?: string) => { await this.ready; return this.service.listRetiredAttachments({ authority: 4 }, recordId) }, { authority: 4 })
-    consoleService.addListener('memebot/archive/attachment/restore', async (id: string) => { await this.ready; return this.service.restoreRetiredAttachment({ authority: 4 }, id) }, { authority: 4 })
-    consoleService.addListener('memebot/archive/lifecycle/history', async (recordId?: string) => { await this.ready; return this.service.lifecycleHistory({ authority: 4 }, recordId) }, { authority: 4 })
+      if (id.toUpperCase().startsWith('P')) return this.service.removeIssue(consoleActor, id, confirmation)
+      return this.service.removeWork(consoleActor, id, confirmation)
+    }, authenticated)
+    consoleService.addListener('memebot/archive/record/restore', async (id: string) => { await this.ready; return this.service.restoreRecord(consoleActor, id) }, authenticated)
+    consoleService.addListener('memebot/archive/record/purge', async (id: string, confirmation: string) => { await this.ready; return this.service.purgeRecord(consoleActor, id, confirmation) }, authenticated)
+    consoleService.addListener('memebot/archive/record/anonymize', async (id: string, confirmation: string) => { await this.ready; return this.service.anonymizeRecord(consoleActor, id, confirmation) }, authenticated)
+    consoleService.addListener('memebot/archive/attachments/retired', async (recordId?: string) => { await this.ready; return this.service.listRetiredAttachments(consoleActor, recordId) }, authenticated)
+    consoleService.addListener('memebot/archive/attachment/restore', async (id: string) => { await this.ready; return this.service.restoreRetiredAttachment(consoleActor, id) }, authenticated)
+    consoleService.addListener('memebot/archive/lifecycle/history', async (recordId?: string) => { await this.ready; return this.service.lifecycleHistory(consoleActor, recordId) }, authenticated)
   }
 }
 
 export function apply(ctx: Context, config: Config) {
   const suppliedR2 = config?.r2
   config = {
-    administrators: config?.administrators ?? [], managementGroups: config?.managementGroups ?? [], localPath: config?.localPath || 'data/memebot-archive',
+    localPath: config?.localPath || 'data/memebot-archive',
     paperMaxMb: config?.paperMaxMb || 100, workMaxMb: config?.workMaxMb || 500,
     r2: {
       enabled: suppliedR2?.enabled ?? false,
@@ -1454,7 +1457,8 @@ export function apply(ctx: Context, config: Config) {
     await ready
     if (!session) return '无法识别当前会话。'
     const archiveSession = commandSession(session)
-    service.requireAdmin(archiveSession)
+    const denial = await archiveAccessDenial(ctx, session, 'write')
+    if (denial) return denial
     const paper = service.getIssue(id)
     const work = service.getWork(id)
     if (!paper && !work) return 'Archive 记录不存在。'
@@ -1475,7 +1479,8 @@ export function apply(ctx: Context, config: Config) {
     await ready
     if (!session) return '无法识别当前会话。'
     const archiveSession = commandSession(session)
-    service.requireAdmin(archiveSession)
+    const denial = await archiveAccessDenial(ctx, session, 'write')
+    if (denial) return denial
     try {
       const title = await guidedPrompt(session, '请输入 Paper 标题。')
       const issueNumber = await guidedPrompt(session, '请输入期号。')
@@ -1504,7 +1509,8 @@ export function apply(ctx: Context, config: Config) {
     await ready
     if (!session) return '无法识别当前会话。'
     const archiveSession = commandSession(session)
-    service.requireAdmin(archiveSession)
+    const denial = await archiveAccessDenial(ctx, session, 'write')
+    if (denial) return denial
     try {
       const title = await guidedPrompt(session, '请输入 Work 标题。')
       const author = await guidedPrompt(session, '请输入作者。')
@@ -1531,7 +1537,8 @@ export function apply(ctx: Context, config: Config) {
     await ready
     if (!session) return '无法识别当前会话。'
     const archiveSession = commandSession(session)
-    service.requireAdmin(archiveSession)
+    const denial = await archiveAccessDenial(ctx, session, 'write')
+    if (denial) return denial
     const paper = service.getIssue(id)
     if (!paper) return 'Paper 不存在。'
     const field = await guidedPrompt(session, `当前：${paper.title} ${paper.issueNumber} ${paper.month}\n请选择字段：标题、期号、月份、描述、来源。`)
@@ -1557,38 +1564,57 @@ export function apply(ctx: Context, config: Config) {
     const items = service.searchWorks({ author, text: query })
     return items.length ? items.map(item => `${item.id} ${item.author} - ${item.title}`).join('\n') : '没有找到 Work。'
   })
-  root.subcommand('.issue-preview <metadata:text>', '预览 Newspaper Issue 元数据').action(({ session }, metadata) => {
-    service.requireAdmin(commandSession(session))
+  root.subcommand('.issue-preview <metadata:text>', '预览 Newspaper Issue 元数据').action(async ({ session }, metadata) => {
+    const denial = await archiveAccessDenial(ctx, session, 'read')
+    if (denial) return denial
     return JSON.stringify(service.previewIssue(payload(metadata)))
   })
-  root.subcommand('.work-preview <metadata:text>', '预览 Work 元数据').action(({ session }, metadata) => {
-    service.requireAdmin(commandSession(session))
+  root.subcommand('.work-preview <metadata:text>', '预览 Work 元数据').action(async ({ session }, metadata) => {
+    const denial = await archiveAccessDenial(ctx, session, 'read')
+    if (denial) return denial
     return JSON.stringify(service.previewWork(payload(metadata)))
   })
   root.subcommand('.issue-publish <metadata:text>', '发布 Newspaper Issue').action(async ({ session }, metadata) => {
+    const denial = await archiveAccessDenial(ctx, session, 'write')
+    if (denial) return denial
     await ready
     const item = await service.publishIssue(commandSession(session), payload(metadata))
     return `已发布 Newspaper Issue ${item.id}。`
   })
   root.subcommand('.work-publish <metadata:text>', '发布 Work').action(async ({ session }, metadata) => {
+    const denial = await archiveAccessDenial(ctx, session, 'write')
+    if (denial) return denial
     const item = await service.publishWork(commandSession(session), payload(metadata))
     return `已发布 Work ${item.id}。`
   })
   root.subcommand('.issue-edit <id:string> <confirmation:string> <patch:text>', '编辑 Newspaper Issue 元数据').action(async ({ session }, id, confirmation, patch) => {
+    const denial = await archiveAccessDenial(ctx, session, 'write')
+    if (denial) return denial
     return `已更新 Newspaper Issue ${(await service.updateIssue(commandSession(session), id, payload(patch), confirmation)).id}。`
   })
   root.subcommand('.work-edit <id:string> <confirmation:string> <patch:text>', '编辑 Work 元数据').action(async ({ session }, id, confirmation, patch) => {
+    const denial = await archiveAccessDenial(ctx, session, 'write')
+    if (denial) return denial
     return `已更新 Work ${(await service.updateWork(commandSession(session), id, payload(patch), confirmation)).id}。`
   })
   root.subcommand('.issue-remove <id:string> <confirmation:string>', '删除 Newspaper Issue').action(async ({ session }, id, confirmation) => {
+    const denial = await archiveAccessDenial(ctx, session, 'write')
+    if (denial) return denial
     await service.removeIssue(commandSession(session), id, confirmation)
     return `已删除 Newspaper Issue ${id}。`
   })
   root.subcommand('.work-remove <id:string> <confirmation:string>', '删除 Work').action(async ({ session }, id, confirmation) => {
+    const denial = await archiveAccessDenial(ctx, session, 'write')
+    if (denial) return denial
     await service.removeWork(commandSession(session), id, confirmation)
     return `已删除 Work ${id}。`
   })
-  root.subcommand('.retry', '重试附件 R2 同步').action(async ({ session }) => { service.requireAdmin(commandSession(session)); await service.retryPending(); return '已重试待同步附件。' })
+  root.subcommand('.retry', '重试附件 R2 同步').action(async ({ session }) => {
+    const denial = await archiveAccessDenial(ctx, session, 'write')
+    if (denial) return denial
+    await service.retryPending()
+    return '已重试待同步附件。'
+  })
   return service
 }
 

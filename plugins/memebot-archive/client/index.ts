@@ -187,4 +187,4 @@ const ArchivePage = defineComponent({
   },
 })
 
-export default (ctx: Context) => ctx.page({ id: 'memebot-archive', path: '/memebot/archive', name: 'Archive 归档', icon: 'activity:database', component: ArchivePage })
+export default (ctx: Context) => ctx.page({ id: 'memebot-archive', path: '/memebot/archive', name: 'Archive 归档', icon: 'activity:database', authority: 1, component: ArchivePage })

@@ -56,10 +56,9 @@ describe('Publication Appearances', () => {
     expect(restarted.getWorkDetails(one.id)?.papers).toHaveLength(2)
   })
 
-  it('can create a complete Work while associating it and enforces administrator permission', async () => {
+  it('can create a complete Work while associating it after boundary authorization', async () => {
     const root = await tempRoot(); const service = new ArchiveService({ config: { localPath: root }, metadata: new KoishiArchiveMetadataRepository(fakeContext() as any) }); await service.initialize()
     const paper = await service.publishIssue(admin, { month: '2026-08', issueNumber: '8', title: 'Issue', attachment: { filename: 'paper.pdf', contentType: 'application/pdf', data: '%PDF-1.7\n%%EOF' } })
-    await expect(service.associateWork({}, paper.id, { workId: 'W1' })).rejects.toThrow('permission')
     const appearance = await service.associateWork(admin, paper.id, { work: { title: 'Created', author: 'Author', attachment: { filename: 'created.zip', contentType: 'application/zip', data: zip() } }, page: '12' })
     expect(appearance.workId).toBe('W1')
     expect(service.getPaperDetails(paper.id)?.works[0].work.title).toBe('Created')

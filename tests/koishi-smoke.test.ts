@@ -43,6 +43,18 @@ const intakeWithAccess = {
   },
 }
 
+const archiveWithAccess = {
+  name: 'test-archive-with-access',
+  apply(ctx: any, config: any) {
+    const result: { service?: ArchiveService } = {}
+    access.apply(ctx, config.access)
+    ctx.inject(['access'], (injected: any) => {
+      result.service = archive.apply(injected, config.archive)
+    })
+    return result
+  },
+}
+
 afterEach(async () => {
   await Promise.all(harnesses.splice(0).map(harness => harness.stop()))
 })
@@ -174,7 +186,7 @@ describe('standalone plugin command smoke behaviors', () => {
   })
 
   it('loads archive and browses issues through a Mock session', async () => {
-    const harness = await createKoishiTestHarness(archive, {})
+    const harness = await createKoishiTestHarness(archiveWithAccess, { access: { administrators: [], managementGroups: [] }, archive: {} })
     harnesses.push(harness)
 
     const client = await harness.client({ userId: '10002', channelId: '20001' })
@@ -183,10 +195,26 @@ describe('standalone plugin command smoke behaviors', () => {
     ])
   })
 
-  it('navigates Publication Appearances and related search through a Mock session', async () => {
-    const harness = await createKoishiTestHarness(archive, {})
+  it('uses Access identity for Archive management reads and Access location for mutations', async () => {
+    const harness = await createKoishiTestHarness(archiveWithAccess, {
+      access: { administrators: [{ qq: '10002' }], managementGroups: [{ qq: '20001' }] }, archive: {},
+    })
     harnesses.push(harness)
-    const service = harness.pluginResult as ArchiveService
+    const ordinary = await harness.client({ userId: '10003', channelId: '20001' })
+    const administrator = await harness.client({ userId: '10002', channelId: 'unlisted' })
+    const metadata = '{"month":"2026-08","issueNumber":"8","title":"Issue"}'
+
+    await expect(ordinary.receive(`archive.issue-preview ${metadata}`)).resolves.toEqual(['你不是管理员。'])
+    await expect(administrator.receive(`archive.issue-preview ${metadata}`)).resolves.toEqual([expect.stringContaining('Newspaper Issue')])
+    await expect(administrator.receive(`archive.issue-publish ${metadata}`)).resolves.toEqual([
+      '此群不是管理群，请私聊操作或先添加该群。',
+    ])
+  })
+
+  it('navigates Publication Appearances and related search through a Mock session', async () => {
+    const harness = await createKoishiTestHarness(archiveWithAccess, { access: { administrators: [], managementGroups: [] }, archive: {} })
+    harnesses.push(harness)
+    const service = (harness.pluginResult as any).service as ArchiveService
     const client = await harness.client({ userId: '10002', channelId: '20001' })
     await client.receive('archive.issues')
     service.db.issues.push({ id: 'P1', issueNumber: '1', month: '2026-08', title: 'Issue', publishedAt: new Date(), lifecycle: 'active' })
@@ -197,13 +225,14 @@ describe('standalone plugin command smoke behaviors', () => {
     await expect(client.receive('archive.search paper Alice')).resolves.toEqual([expect.stringContaining('P1 2026-08 第1期 Issue')])
     await expect(client.receive('archive.search works Related')).resolves.toEqual([expect.stringContaining('W1 Alice - Work')])
     await expect(client.receive('archive P1')).resolves.toEqual([expect.stringContaining('W1 Alice - Work · 第3页 · Features')])
-    await expect(service.associateWork({ authority: 1 }, 'P1', { workId: 'W1' })).rejects.toThrow('permission')
   })
 
   it('shows the Archive target and requires explicit confirmation before soft deletion', async () => {
-    const harness = await createKoishiTestHarness(archive, { administrators: [{ qq: '10002' }], managementGroups: [] })
+    const harness = await createKoishiTestHarness(archiveWithAccess, {
+      access: { administrators: [{ qq: '10002' }], managementGroups: [{ qq: '20001' }] }, archive: {},
+    })
     harnesses.push(harness)
-    const service = harness.pluginResult as ArchiveService
+    const service = (harness.pluginResult as any).service as ArchiveService
     const client = await harness.client({ userId: '10002', channelId: '20001' })
     await client.receive('archive.issues')
     service.db.works.push({ id: 'W1', title: 'Work to remove', author: 'Alice', publishedAt: new Date(), lifecycle: 'active' })
@@ -222,7 +251,7 @@ describe('standalone plugin command smoke behaviors', () => {
   })
 
   it('represents QQ-style IDs and quoted messages at the Mock boundary', async () => {
-    const harness = await createKoishiTestHarness(archive, {})
+    const harness = await createKoishiTestHarness(archiveWithAccess, { access: { administrators: [], managementGroups: [] }, archive: {} })
     harnesses.push(harness)
 
     const client = await harness.client({ userId: '2854196310', channelId: '768284112' })
@@ -238,7 +267,7 @@ describe('standalone plugin command smoke behaviors', () => {
   })
 
   it('captures forward attempts and ordinary-delivery fallback', async () => {
-    const harness = await createKoishiTestHarness(archive, {})
+    const harness = await createKoishiTestHarness(archiveWithAccess, { access: { administrators: [], managementGroups: [] }, archive: {} })
     harnesses.push(harness)
     const issue = {
       id: 'issue-2026-08',
@@ -247,7 +276,7 @@ describe('standalone plugin command smoke behaviors', () => {
       title: '八月刊',
       publishedAt: new Date('2026-08-01T00:00:00Z'),
     }
-    const service = harness.pluginResult
+    const service = (harness.pluginResult as any).service
     service.db.issues.push(issue)
     const capture = createDeliveryCapture({ failForward: true })
     const client = await harness.client({ userId: '2854196310', channelId: '768284112' })
