@@ -4128,7 +4128,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"koishi-plugin-memebot-access@workspace:plugins/memebot-access":
+"koishi-plugin-memebot-access@workspace:^, koishi-plugin-memebot-access@workspace:plugins/memebot-access":
   version: 0.0.0-use.local
   resolution: "koishi-plugin-memebot-access@workspace:plugins/memebot-access"
   dependencies:
@@ -4146,6 +4146,7 @@ __metadata:
   resolution: "koishi-plugin-memebot-activity@workspace:plugins/memebot-activity"
   dependencies:
     koishi: "npm:^4.18.7"
+    koishi-plugin-memebot-access: "workspace:^"
     typescript: "npm:^5.6.2"
     vitest: "npm:^3.2.4"
   peerDependencies:
