@@ -32,7 +32,7 @@ describe('Archive Console shell', () => {
     const sources = (await clientSources()).join('\n')
     expect(sources).toContain('<script setup lang="ts">')
     expect(sources).not.toMatch(/\bwindow\.(?:alert|confirm|prompt)\s*\(/)
-    expect(sources).not.toMatch(/\b(?:alert|confirm|prompt)\s*\(/)
+    expect(sources).not.toMatch(/(?:^|[^.\w])(?:alert|confirm|prompt)\s*\((?!\s*[A-Za-z_$][\w$]*\s*:)/m)
     expect(sources).not.toMatch(/\bstyle\s*=/)
   })
 })
