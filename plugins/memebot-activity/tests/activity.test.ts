@@ -65,7 +65,7 @@ describe('activity behavior', () => {
 
   it('routes optional broadcasts to all configured users and groups', async () => {
     const rows: Activity[] = []
-    const broadcast = vi.fn(async () => [])
+    const broadcast = vi.fn(async () => ['message-1'])
     const ctx = {
       model: {
         create: vi.fn(async (_table, data) => {
@@ -84,9 +84,11 @@ describe('activity behavior', () => {
     }
     const service = new ActivityService(ctx, config)
 
-    await service.create(baseActivity, false)
+    const saved = await service.create(baseActivity, false)
+    expect(saved.notification.state).toBe('not-requested')
     expect(broadcast).not.toHaveBeenCalled()
-    await service.create({ ...baseActivity, title: '需要广播' }, true)
+    const notified = await service.create({ ...baseActivity, title: '需要广播' }, true)
+    expect(notified.notification.state).toBe('delivered')
     expect(buildBroadcastTargets(config)).toEqual(['qq:10001', 'qq:10002', 'qq:20001'])
     expect(broadcast).toHaveBeenCalledWith(['qq:10001', 'qq:10002', 'qq:20001'], expect.stringContaining('需要广播'))
   })
@@ -108,7 +110,34 @@ describe('activity behavior', () => {
       notificationGroups: [],
     })
 
-    expect((await service.update(1, { status: 'active' })).status).toBe('active')
-    expect((await service.cancel(1)).status).toBe('cancelled')
+    expect((await service.update(1, { status: 'active' })).activity.status).toBe('active')
+    expect((await service.cancel(1)).activity.status).toBe('cancelled')
+  })
+
+  it('reports persistence and failed or unavailable notification independently', async () => {
+    const rows: Activity[] = []
+    const ctx = {
+      model: {
+        create: vi.fn(async (_table, data) => {
+          const row = { ...data, id: rows.length + 1 } as Activity
+          rows.push(row)
+          return row
+        }),
+      },
+      broadcast: vi.fn(async () => { throw new Error('network down') }),
+    } as any
+    const failed = await new ActivityService(ctx, {
+      notificationUsers: [{ qq: '10001' }], notificationGroups: [],
+    }).create(baseActivity, true)
+    expect(failed.activity.id).toBe(1)
+    expect(failed.notification).toEqual({ state: 'failed', targets: ['qq:10001'] })
+    expect(rows).toHaveLength(1)
+
+    const unavailable = await new ActivityService(ctx, {
+      notificationUsers: [], notificationGroups: [],
+    }).create({ ...baseActivity, title: '未配置通知' }, true)
+    expect(unavailable.activity.id).toBe(2)
+    expect(unavailable.notification).toEqual({ state: 'not-configured', targets: [] })
+    expect(rows).toHaveLength(2)
   })
 })

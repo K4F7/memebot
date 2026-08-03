@@ -12,8 +12,10 @@ const harnesses: KoishiTestHarness[] = []
 const activityWithAccess = {
   name: 'test-activity-with-access',
   apply(ctx: any, config: any) {
+    const result: { service?: any } = {}
     access.apply(ctx, config.access)
-    return ctx.inject(['access'], (injected: any) => activity.apply(injected, config.activity))
+    ctx.inject(['access'], (injected: any) => { result.service = activity.apply(injected, config.activity) })
+    return result
   },
 }
 
@@ -213,15 +215,20 @@ describe('standalone plugin command smoke behaviors', () => {
     ])
   })
 
-  it('drives guided Activity creation with an explicit save-only choice', async () => {
+  it('drives public discovery and the complete guided Activity administration route', async () => {
     const harness = await createKoishiTestHarness(activityWithAccess, {
       access: { administrators: [{ qq: '10001' }], managementGroups: [{ qq: '20001' }] },
       activity: { notificationUsers: [{ qq: '30001' }], notificationGroups: [] },
     })
     harnesses.push(harness)
+    await harness.registerBroadcastTargets(['qq:30001'])
     const client = await harness.client({ userId: '10001', channelId: '20001' })
+    const member = await harness.client({ userId: '10002', channelId: '20001' })
+    const now = Date.now()
+    const upcomingStart = new Date(now + 24 * 60 * 60_000).toISOString()
+    const upcomingEnd = new Date(now + 26 * 60 * 60_000).toISOString()
     const started = client.receive('activity.add')
-    for (const input of ['例会', '2027-08-02T10:00:00Z', '2027-08-02T12:00:00Z', '-', '-', '-', '仅保存']) {
+    for (const input of ['例会', upcomingStart, upcomingEnd, '-', '-', '-', '仅保存']) {
       await new Promise<void>(resolve => setImmediate(resolve))
       void client.receive(input)
     }
@@ -229,7 +236,41 @@ describe('standalone plugin command smoke behaviors', () => {
       '请输入活动标题。', expect.stringContaining('请选择“仅保存”或“保存并通知”'), expect.stringContaining('活动创建成功'),
     ]))
     expect(harness.broadcasts).toEqual([])
-    await expect(client.receive('activity #1')).resolves.toEqual([expect.stringContaining('活动 #1：例会')])
+    const service = (harness.pluginResult as any).service
+    await service.create({
+      title: '进行中的活动',
+      startAt: new Date(now - 60 * 60_000),
+      endAt: new Date(now + 60 * 60_000),
+    })
+    await expect(member.receive('activity')).resolves.toEqual([
+      expect.stringMatching(/活动 #2：进行中的活动[\s\S]*活动 #1：例会/),
+    ])
+    await expect(member.receive('activity #1')).resolves.toEqual([expect.stringContaining('活动 #1：例会')])
+
+    const editing = client.receive('activity.edit 1')
+    for (const input of ['标题，地点', '更新后的例会', '新活动室', '保存并通知']) {
+      await new Promise<void>(resolve => setImmediate(resolve))
+      void client.receive(input)
+    }
+    await expect(editing).resolves.toEqual(expect.arrayContaining([
+      expect.stringContaining('请输入要修改的字段'),
+      expect.stringContaining('活动更新成功；记录已保存，通知已送达。'),
+    ]))
+    expect(harness.broadcasts).toEqual([{
+      targets: ['qq:30001'], content: expect.stringContaining('活动 #1：更新后的例会'),
+    }])
+    await expect(member.receive('activity #1')).resolves.toEqual([expect.stringContaining('地点：新活动室')])
+
+    const cancelling = client.receive('activity.cancel 1')
+    await new Promise<void>(resolve => setImmediate(resolve))
+    void client.receive('仅保存')
+    await expect(cancelling).resolves.toEqual(expect.arrayContaining([
+      expect.stringContaining('活动已取消；已仅保存，未请求通知。'),
+    ]))
+    expect(harness.broadcasts).toHaveLength(1)
+    await expect(member.receive('activity')).resolves.toEqual([expect.not.stringContaining('更新后的例会')])
+    await expect(client.receive('activity.history')).resolves.toEqual([expect.stringContaining('活动 #1：更新后的例会')])
+    await expect(member.receive('activity #1')).resolves.toEqual([expect.stringContaining('状态：cancelled')])
   })
 
   it('loads archive and browses issues through a Mock session', async () => {
