@@ -190,6 +190,23 @@ describe('archive integration paths', () => {
     await expect(handlers.get('memebot/archive/paper/download')!('P1')).resolves.toMatchObject({ filename: expect.stringContaining('replacement.pdf') })
     await expect(handlers.get('memebot/archive/papers')!('Revised')).resolves.toEqual([expect.objectContaining({ id: 'P1', title: 'August Revised' })])
   })
+  it('rejects oversized Console data URLs before decoding them', async () => {
+    const root = await tempRoot()
+    const handlers = new Map<string, (...args: any[]) => Promise<any>>()
+    const consoleService = { addEntry() {}, addListener(name: string, handler: (...args: any[]) => Promise<any>) { handlers.set(name, handler) } }
+    const ctx = { get: () => consoleService } as any
+    const service = new ArchiveService({ config: { localPath: root } })
+    new ArchiveConsoleFeatures(ctx, service, Promise.resolve(), undefined, undefined, undefined, {
+      paperMaxMb: 0.000001,
+      workMaxMb: 0.000001,
+    }).register()
+    const data = `data:application/pdf;base64,${Buffer.from('%PDF-1.7\n%%EOF').toString('base64')}`
+
+    await expect(handlers.get('memebot/archive/paper/create')!({
+      month: '2026-08', issueNumber: '8', title: 'Oversized',
+      attachment: { filename: 'oversized.pdf', contentType: 'application/pdf', data },
+    })).rejects.toThrow('Paper PDF 大小超过')
+  })
   it('keeps R2 failures retryable and eventually syncs', async () => {
     const root = await tempRoot()
     let attempts = 0
