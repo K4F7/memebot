@@ -108,6 +108,30 @@ describe('archive integration paths', () => {
     await expect(handlers.get('memebot/archive/paper/preview')!('P1')).rejects.toThrow('不存在')
     await expect(handlers.get('memebot/archive/paper/download')!('P1')).rejects.toThrow('不存在')
   })
+  it('runs the complete Paper create, edit, replace, details, preview, and download Console path', async () => {
+    const root = await tempRoot()
+    const handlers = new Map<string, (...args: any[]) => Promise<any>>()
+    const consoleService = { addEntry() {}, addListener(name: string, handler: (...args: any[]) => Promise<any>) { handlers.set(name, handler) } }
+    const ctx = { get: () => consoleService } as any
+    new ArchiveConsoleFeatures(ctx, new ArchiveService({ config: { localPath: root } }), Promise.resolve()).register()
+    const attachment = (filename: string, content: string) => ({
+      filename,
+      contentType: 'application/pdf',
+      data: `data:application/pdf;base64,${Buffer.from(content).toString('base64')}`,
+    })
+
+    const created = await handlers.get('memebot/archive/paper/create')!({
+      month: '2026-08', issueNumber: '8', title: 'August', attachment: attachment('august.pdf', '%PDF-1.7\nfirst\n%%EOF'),
+    })
+    expect(created).toMatchObject({ id: 'P1', title: 'August' })
+    await expect(handlers.get('memebot/archive/paper/details')!('P1')).resolves.toMatchObject({ paper: { id: 'P1' }, works: [] })
+    await expect(handlers.get('memebot/archive/paper/preview')!('P1')).resolves.toMatchObject({ filename: 'august.pdf', contentType: 'application/pdf' })
+
+    await handlers.get('memebot/archive/paper/edit')!('P1', { month: '2026-08', issueNumber: '8', title: 'August Revised' })
+    await handlers.get('memebot/archive/paper/upload')!('P1', attachment('replacement.pdf', '%PDF-1.7\nreplacement\n%%EOF'))
+    await expect(handlers.get('memebot/archive/paper/download')!('P1')).resolves.toMatchObject({ filename: expect.stringContaining('replacement.pdf') })
+    await expect(handlers.get('memebot/archive/papers')!('Revised')).resolves.toEqual([expect.objectContaining({ id: 'P1', title: 'August Revised' })])
+  })
   it('keeps R2 failures retryable and eventually syncs', async () => {
     const root = await tempRoot()
     let attempts = 0
