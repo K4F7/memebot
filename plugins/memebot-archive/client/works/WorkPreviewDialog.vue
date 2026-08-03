@@ -13,6 +13,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
+  closed: []
 }>()
 
 const tree = ref<WorkPreviewEntry[]>([])
@@ -100,6 +101,11 @@ async function downloadOriginal() {
     // The parent reports the integrated Koishi message.
   }
 }
+
+function handleClosed() {
+  reset()
+  emit('closed')
+}
 </script>
 
 <template>
@@ -108,7 +114,7 @@ async function downloadOriginal() {
     fullscreen
     :title="work ? `${work.id} ${work.title} · 安全派生预览` : '安全派生预览'"
     @open="loadTree"
-    @closed="reset"
+    @closed="handleClosed"
     @update:model-value="emit('update:modelValue', $event)"
   >
     <div class="preview-toolbar">
@@ -270,7 +276,7 @@ async function downloadOriginal() {
   margin-top: 16px;
 }
 
-@media (max-width: 720px) {
+@media (max-width: 767px) {
   .preview-layout {
     grid-template-columns: 1fr;
   }

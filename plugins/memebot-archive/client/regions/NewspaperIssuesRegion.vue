@@ -30,7 +30,8 @@ const maxPage = computed(() => Math.max(1, Math.ceil(issues.value.length / route
 
 function replaceRoute(patch: Partial<ReturnType<typeof normalizeIssuesRoute>>) {
   const next = { ...routeState.value, ...patch }
-  void router.replace({ path: router.currentRoute.value.path, query: toIssuesQuery(next) })
+  if (JSON.stringify(toIssuesQuery(next)) === JSON.stringify(toIssuesQuery(routeState.value))) return
+  void router.push({ path: router.currentRoute.value.path, query: toIssuesQuery(next) })
 }
 
 watch(() => routeState.value.search, (value) => {

@@ -18,7 +18,8 @@ const regions = {
 const tab = computed<ArchiveTab>({
   get: () => normalizeArchiveTab(router.currentRoute.value.query.tab),
   set: (value) => {
-    void router.replace({
+    if (value === tab.value) return
+    void router.push({
       path: router.currentRoute.value.path,
       query: toArchiveTabQuery(value),
     })

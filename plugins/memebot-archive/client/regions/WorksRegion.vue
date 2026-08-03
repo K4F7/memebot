@@ -44,7 +44,8 @@ const selectablePapers = computed(() => appearance.value
 
 function replaceRoute(patch: Partial<ReturnType<typeof normalizeWorksRoute>>) {
   const next = { ...routeState.value, ...patch }
-  void router.replace({
+  if (JSON.stringify(toWorksQuery(next)) === JSON.stringify(toWorksQuery(routeState.value))) return
+  void router.push({
     path: router.currentRoute.value.path,
     query: toWorksQuery(next),
   })
@@ -112,18 +113,33 @@ function selectWork(work: Work) {
 }
 
 function openCreate() {
+  rememberFocus()
   formMode.value = 'create'
   formVisible.value = true
 }
 
 function openEdit() {
   if (!selectedWork.value) return
+  rememberFocus()
   formMode.value = 'edit'
   formVisible.value = true
 }
 
+function openPreview() {
+  if (!selectedWork.value) return
+  rememberFocus()
+  previewVisible.value = true
+}
+
 function rememberFocus() {
   returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+}
+
+function restoreDialogFocus() {
+  void nextTick(() => {
+    const target = returnFocus?.isConnected ? returnFocus : focusAnchor.value
+    target?.focus()
+  })
 }
 
 async function loadPapers(request: number) {
@@ -166,10 +182,7 @@ function restoreAppearanceFocus() {
   appearance.value = undefined
   appearanceWork.value = undefined
   appearancePaperIds.value = []
-  void nextTick(() => {
-    const target = returnFocus?.isConnected ? returnFocus : focusAnchor.value
-    target?.focus()
-  })
+  restoreDialogFocus()
 }
 
 async function saveAppearance(value: AppearanceFormValue) {
@@ -381,7 +394,7 @@ function changePageSize(value: number) {
           <div class="details-actions">
             <el-button @click="openEdit">编辑或替换 ZIP</el-button>
             <el-button @click="downloadPackage(details.work)">下载原始 ZIP</el-button>
-            <el-button type="primary" @click="previewVisible = true">浏览安全预览</el-button>
+            <el-button type="primary" @click="openPreview">浏览安全预览</el-button>
           </div>
         </div>
         <p v-if="details.work.description">{{ details.work.description }}</p>
@@ -419,11 +432,13 @@ function changePageSize(value: number) {
       :mode="formMode"
       :work="formMode === 'edit' ? selectedWork : undefined"
       :submit="saveWork"
+      @closed="restoreDialogFocus"
     />
     <WorkPreviewDialog
       v-model="previewVisible"
       :work="selectedWork"
       :download-package="downloadPackage"
+      @closed="restoreDialogFocus"
     />
     <AppearanceFormDialog
       v-model="appearanceVisible"
@@ -501,6 +516,10 @@ function changePageSize(value: number) {
   margin-top: 24px;
 }
 
+.work-details :deep(.el-descriptions__content) {
+  overflow-wrap: anywhere;
+}
+
 .details-actions {
   flex-wrap: wrap;
   justify-content: flex-end;
@@ -540,7 +559,7 @@ function changePageSize(value: number) {
   border: 0;
 }
 
-@media (max-width: 720px) {
+@media (max-width: 767px) {
   .desktop-results {
     display: none;
   }
@@ -559,6 +578,10 @@ function changePageSize(value: number) {
 
   .works-search :deep(.el-input) {
     max-width: none;
+  }
+
+  .work-details :deep(.el-descriptions__table) {
+    table-layout: fixed;
   }
 
   .appearance-list li {
