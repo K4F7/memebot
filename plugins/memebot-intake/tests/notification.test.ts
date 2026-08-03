@@ -72,22 +72,27 @@ describe('intake notification and work tracking', () => {
     const ctx = fakeContext() as any
     const records = new IntakeService(ctx, () => new Date('2026-08-02T00:00:00Z'))
     const record = await records.create({ type: 'feedback', submitterId: '10001', sourceSession: 'qq:private:10001', body: '反馈', attachments: [] })
+    const competingInstance = new IntakeService(ctx, () => new Date('2026-08-02T00:00:00Z'))
 
-    const [first, second] = await Promise.all([records.claim(record.id, 'admin-a'), records.claim(record.id, 'admin-b')])
-    expect([first.assigneeId, second.assigneeId]).toEqual(['admin-a', 'admin-a'])
-    expect((await records.get(record.id))?.status).toBe('processing')
+    const [first, second] = await Promise.all([records.claim(record.id, 'admin-a'), competingInstance.claim(record.id, 'admin-b')])
+    expect(first.assigneeId).toBe(second.assigneeId)
+    expect(['admin-a', 'admin-b']).toContain(first.assigneeId)
+    const winner = first.assigneeId!
+    const next = winner === 'admin-a' ? 'admin-b' : 'admin-a'
+    expect((await records.get(record.id))?.status).toBe('pending')
     expect((await records.get(record.id))?.acceptanceNotified).toBe(false)
 
     await records.markAcceptanceNotified(record.id)
-    await records.transfer(record.id, 'admin-b', 'admin-a')
-    await records.close(record.id, 'admin-b')
+    await records.transfer(record.id, next, winner)
+    await records.setHandlingStatus(record.id, 'processing', next)
+    await records.close(record.id, next)
     expect((await records.get(record.id))?.active).toBe(false)
     expect((await records.get(record.id))?.status).toBe('processing')
-    await records.reopen(record.id, 'admin-b')
+    await records.reopen(record.id, next)
     const reopened = await records.get(record.id)
     expect(reopened?.active).toBe(true)
     expect(reopened?.status).toBe('processing')
-    expect(reopened?.audit.map(event => event.action)).toEqual(['claim', 'acceptance-notified', 'transfer', 'close', 'reopen'])
+    expect(reopened?.audit.map(event => event.action)).toEqual(['claim', 'acceptance-notified', 'transfer', 'status', 'close', 'reopen'])
   })
 
   it('cleans attachments ninety days after close while retaining text and history', async () => {

@@ -23,9 +23,11 @@ function fakeContext() {
 
 describe('intake workflows', () => {
   it('isolates draft keys by QQ user and conversation', () => {
-    expect(draftKey('10001', 'qq:group:20001')).toBe('10001\u0000qq:group:20001')
+    expect(draftKey('10001', 'qq:group:20001')).toBe('["10001","qq:group:20001"]')
+    expect(draftKey('10001', 'qq:group:20001')).not.toMatch(/[\u0000-\u001f]/)
     expect(draftKey('10002', 'qq:group:20001')).not.toBe(draftKey('10001', 'qq:group:20001'))
     expect(draftKey('10001', 'qq:private:10001')).not.toBe(draftKey('10001', 'qq:group:20001'))
+    expect(draftKey('a', 'b:c')).not.toBe(draftKey('a:b', 'c'))
   })
 
   it('counts messages, images, and other attachments independently', () => {
@@ -42,6 +44,13 @@ describe('intake workflows', () => {
     expect((await service.create({ type: 'feedback', submitterId: 'u3', sourceSession: 'qq:u3', body: '另一个反馈', attachments: [] })).id).toBe('反馈#2')
   })
 
+  it('allocates distinct stable IDs to concurrent records of the same type', async () => {
+    const service = new IntakeService(fakeContext() as any)
+    const input = { type: 'feedback' as const, submitterId: 'u1', sourceSession: 'qq:u1', body: '反馈', attachments: [] }
+    const records = await Promise.all([service.create(input), service.create({ ...input, submitterId: 'u2', sourceSession: 'qq:u2' })])
+    expect(records.map(record => record.id)).toEqual(['反馈#1', '反馈#2'])
+  })
+
   it('continues a persisted multi-message draft after service restart', async () => {
     const ctx = fakeContext() as any
     let now = new Date('2026-01-01T00:00:00Z')
@@ -55,6 +64,29 @@ describe('intake workflows', () => {
     const record = await restarted.submit('u1', 'qq:g1')
     expect(record.body).toBe('第一条\n\n第二条')
     expect(record.id).toBe('建议#1')
+  })
+
+  it('completes a draft only once when exact submissions race', async () => {
+    const ctx = fakeContext() as any
+    const records = new IntakeService(ctx)
+    const drafts = new IntakeDraftService(ctx, records, new IntakeAttachmentStore('unused'))
+    await drafts.start('feedback', 'u1', 'qq:u1')
+    await drafts.append('u1', 'qq:u1', '反馈', [])
+    const results = await Promise.allSettled([drafts.submit('u1', 'qq:u1'), drafts.submit('u1', 'qq:u1')])
+    expect(results.map(result => result.status).sort()).toEqual(['fulfilled', 'rejected'])
+    expect((await records.list('feedback')).map(record => record.id)).toEqual(['反馈#1'])
+  })
+
+  it('can finish a persisted draft that still has the legacy NUL key', async () => {
+    const ctx = fakeContext() as any
+    const records = new IntakeService(ctx)
+    await ctx.model.create('intakeDraft', {
+      key: 'u1\u0000qq:u1', type: 'feedback', submitterId: 'u1', sourceSession: 'qq:u1',
+      messages: JSON.stringify([{ body: '旧草稿', attachments: [], createdAt: 1 }]), updatedAt: new Date(),
+    })
+    const drafts = new IntakeDraftService(ctx, records, new IntakeAttachmentStore('unused'))
+    await expect(drafts.submit('u1', 'qq:u1')).resolves.toMatchObject({ id: '反馈#1', body: '旧草稿' })
+    await expect(drafts.get('u1', 'qq:u1')).resolves.toBeUndefined()
   })
 
   it('expires a draft after thirty minutes of inactivity', async () => {
