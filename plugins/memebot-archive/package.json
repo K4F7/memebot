@@ -21,7 +21,8 @@
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.client.json --pretty false",
     "test": "yarn build && vitest run",
     "test:browser": "node e2e/run-browser.cjs",
-    "test:browser:required": "node e2e/run-browser.cjs --required"
+    "test:browser:required": "node e2e/run-browser.cjs --required",
+    "test:sandbox": "playwright test -c playwright.sandbox.config.ts"
   },
   "peerDependencies": {
     "koishi": "^4.18.7"
