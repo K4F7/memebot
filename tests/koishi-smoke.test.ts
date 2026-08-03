@@ -415,6 +415,7 @@ describe('standalone plugin command smoke behaviors', () => {
     })
     harnesses.push(harness)
     const service = (harness.pluginResult as any).service
+    await harness.registerBroadcastTargets(['qq:10006'])
     await service.create({ type: 'feedback', submitterId: '10006', sourceSession: 'qq:u1', body: '反馈', attachments: [] })
     await service.create({ type: 'suggestion', submitterId: '10007', sourceSession: 'qq:u2', body: '建议', attachments: [] })
 
@@ -435,6 +436,12 @@ describe('standalone plugin command smoke behaviors', () => {
     await expect(implicitAdministrator.receive('intake.admin.claim 反馈#1')).resolves.toEqual([
       expect.stringContaining('认领人 QQ: 40001'),
     ])
+    expect(harness.broadcasts).toEqual([{
+      targets: ['qq:10006'],
+      content: expect.stringContaining('反馈#1 已由管理员 40001 认领'),
+    }])
+    await implicitAdministrator.receive('intake.admin.claim 反馈#1')
+    expect(harness.broadcasts).toHaveLength(1)
     await expect(implicitAdministrator.receive('intake.admin.transfer 反馈#1 40002')).resolves.toEqual([
       '转交目标必须是已持久化的显式管理员 QQ。',
     ])
@@ -497,11 +504,23 @@ describe('standalone plugin command smoke behaviors', () => {
     const stranger = await harness.client({ userId: '10003', channelId: '20001' })
     await expect(stranger.receive(qqQuotedCommand(messageId, '管理通知', '认领'))).resolves.toEqual(['你不是管理员。'])
     const first = await harness.client({ userId: '10001', channelId: '20001' })
+    harness.broadcasts.splice(0)
     await expect(first.receive(qqQuotedCommand(messageId, '管理通知', '认领'))).resolves.toEqual(['已认领 反馈#1。'])
+    expect(harness.broadcasts).toEqual([{
+      targets: ['qq:10006'],
+      content: expect.stringContaining('反馈#1 已由管理员 10001 认领'),
+    }])
+    await expect(first.receive('intake 反馈#1')).resolves.toEqual([expect.stringContaining('feedback pending')])
     const second = await harness.client({ userId: '10002', channelId: '20001' })
     await expect(second.receive(qqQuotedCommand(messageId, '管理通知', '认领'))).resolves.toEqual(['反馈#1 已由 10001 认领。'])
+    expect(harness.broadcasts).toHaveLength(1)
+    await expect(first.receive(qqQuotedCommand(messageId, '管理通知', '这不是管理动作'))).resolves.toEqual([
+      expect.stringContaining('未知管理动作'),
+    ])
+    expect(harness.broadcasts).toHaveLength(1)
     await expect(first.receive(qqQuotedCommand(messageId, '管理通知', '转交 10002'))).resolves.toEqual([expect.stringContaining('认领人 QQ: 10002')])
     await expect(first.receive(qqQuotedCommand(messageId, '管理通知', '取消认领'))).resolves.toEqual([expect.not.stringContaining('认领人 QQ:')])
+    await expect(first.receive(qqQuotedCommand(messageId, '管理通知', '处理中'))).resolves.toEqual([expect.stringContaining('processing')])
     await expect(first.receive(qqQuotedCommand(messageId, '管理通知', '已解决'))).resolves.toEqual([expect.stringContaining('resolved')])
     await expect(first.receive(qqQuotedCommand(messageId, '管理通知', '关闭'))).resolves.toEqual([expect.stringContaining('（已关闭）')])
     await expect(first.receive(qqQuotedCommand(messageId, '管理通知', '打开'))).resolves.toEqual([expect.not.stringContaining('（已关闭）')])

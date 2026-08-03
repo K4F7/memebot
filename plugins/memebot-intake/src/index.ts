@@ -9,7 +9,7 @@ export const name = 'memebot-intake'
 export const inject = ['database', 'access']
 
 export type IntakeType = 'submission' | 'feedback' | 'suggestion'
-export function draftKey(userId: string, conversationId: string) { return `${userId}\u0000${conversationId}` }
+export function draftKey(userId: string, conversationId: string) { return JSON.stringify([userId, conversationId]) }
 export type IntakeStatus =
   | 'pending-review' | 'approved' | 'rejected'
   | 'pending' | 'processing' | 'resolved' | 'closed'
@@ -131,6 +131,21 @@ export function canTransition(type: IntakeType, from: IntakeStatus, to: IntakeSt
   return transitions[type][from]?.includes(to) ?? false
 }
 
+async function withKeyLock<Key, Value>(locks: Map<Key, Promise<void>>, key: Key, action: () => Promise<Value>) {
+  const previous = locks.get(key) ?? Promise.resolve()
+  let release!: () => void
+  const current = new Promise<void>(resolve => { release = resolve })
+  const tail = previous.then(() => current)
+  locks.set(key, tail)
+  await previous
+  try {
+    return await action()
+  } finally {
+    release()
+    if (locks.get(key) === tail) locks.delete(key)
+  }
+}
+
 export class IntakeStore {
   private records = new Map<string, IntakeRecord>()
   private sequence = 0
@@ -159,20 +174,23 @@ export class IntakeStore {
 
 export class IntakeService {
   private readonly claimLocks = new Map<string, Promise<void>>()
+  private readonly createLocks = new Map<IntakeType, Promise<void>>()
   constructor(private readonly ctx: Context, private readonly now: () => Date = () => new Date()) {}
   async create(input: IntakeCreateInput) {
-    const prefix = input.type === 'submission' ? '投稿' : input.type === 'feedback' ? '反馈' : '建议'
-    const rows = await this.ctx.model.get('intakeSequence', { type: input.type }) as unknown as Array<{ type: IntakeType; value: number }>
-    const sequence = (rows[0]?.value ?? 0) + 1
-    if (rows[0]) await this.ctx.model.set('intakeSequence', { type: input.type }, { value: sequence })
-    else await this.ctx.model.create('intakeSequence', { type: input.type, value: sequence })
-    const id = `${prefix}#${sequence}`
-    const date = this.now()
-    await this.ctx.model.create('intake', {
-      ...input, id, createdAt: date, updatedAt: date, status: initialStatus[input.type], messages: JSON.stringify(input.messages || []), attachments: JSON.stringify(input.attachments), notes: '[]',
-      active: true, assigneeId: '', acceptanceNotified: false, closedAt: null, audit: '[]',
+    return withKeyLock(this.createLocks, input.type, async () => {
+      const prefix = input.type === 'submission' ? '投稿' : input.type === 'feedback' ? '反馈' : '建议'
+      const rows = await this.ctx.model.get('intakeSequence', { type: input.type }) as unknown as Array<{ type: IntakeType; value: number }>
+      const sequence = (rows[0]?.value ?? 0) + 1
+      if (rows[0]) await this.ctx.model.set('intakeSequence', { type: input.type }, { value: sequence })
+      else await this.ctx.model.create('intakeSequence', { type: input.type, value: sequence })
+      const id = `${prefix}#${sequence}`
+      const date = this.now()
+      await this.ctx.model.create('intake', {
+        ...input, id, createdAt: date, updatedAt: date, status: initialStatus[input.type], messages: JSON.stringify(input.messages || []), attachments: JSON.stringify(input.attachments), notes: '[]',
+        active: true, assigneeId: '', acceptanceNotified: false, closedAt: null, audit: '[]',
+      })
+      return this.get(id) as Promise<IntakeRecord>
     })
-    return this.get(id) as Promise<IntakeRecord>
   }
   async get(id: string) {
     const rows = await this.ctx.model.get('intake', { id }) as unknown as Array<Record<string, unknown>>
@@ -225,8 +243,10 @@ export class IntakeService {
       const record = await this.get(id)
       if (!record) throw new Error('记录不存在')
       if (record.assigneeId) return record
-      const status = record.type === 'feedback' || record.type === 'suggestion' ? 'processing' : record.status
-      return await this.mutate(id, { assigneeId, status }, { action: 'claim', actorId: assigneeId, to: assigneeId })
+      const at = this.now()
+      const audit = [...record.audit, { action: 'claim' as const, actorId: assigneeId, to: assigneeId, at: at.getTime() }]
+      await this.ctx.model.set('intake', { id, assigneeId: '' }, { assigneeId, audit: JSON.stringify(audit), updatedAt: at })
+      return await this.get(id) as IntakeRecord
     } finally {
       release()
       if (this.claimLocks.get(id) === tail) this.claimLocks.delete(id)
@@ -347,6 +367,7 @@ export function countDraft(draft: Pick<IntakeDraft, 'messages'>): DraftCounts {
 }
 
 export class IntakeDraftService {
+  private readonly operationLocks = new Map<string, Promise<void>>()
   constructor(
     private readonly ctx: Context,
     private readonly records: IntakeService,
@@ -354,51 +375,63 @@ export class IntakeDraftService {
     private readonly now: () => Date = () => new Date(),
   ) {}
   async get(userId: string, sourceSession: string): Promise<IntakeDraft | undefined> {
-    const key = draftKey(userId, sourceSession)
-    const rows = await this.ctx.model.get('intakeDraft', { key }) as unknown as Array<Record<string, unknown>>
+    const query = { submitterId: userId, sourceSession }
+    const rows = await this.ctx.model.get('intakeDraft', query) as unknown as Array<Record<string, unknown>>
     if (!rows[0]) return undefined
     const draft = deserializeDraft(rows[0])
     if (this.now().getTime() - draft.updatedAt < draftLifetime) return draft
-    await this.ctx.model.remove('intakeDraft', { key })
+    await this.ctx.model.remove('intakeDraft', query)
     return undefined
   }
   async start(type: IntakeType, userId: string, sourceSession: string): Promise<IntakeDraft> {
-    if (await this.get(userId, sourceSession)) throw new Error('当前会话已有草稿，请先发送“提交”或“取消”。')
-    const draft: IntakeDraft = { key: draftKey(userId, sourceSession), type, submitterId: userId, sourceSession, messages: [], updatedAt: this.now().getTime() }
-    await this.ctx.model.create('intakeDraft', { ...draft, messages: '[]', updatedAt: new Date(draft.updatedAt) })
-    return draft
+    const key = draftKey(userId, sourceSession)
+    return withKeyLock(this.operationLocks, key, async () => {
+      if (await this.get(userId, sourceSession)) throw new Error('当前会话已有草稿，请先发送“提交”或“取消”。')
+      const draft: IntakeDraft = { key, type, submitterId: userId, sourceSession, messages: [], updatedAt: this.now().getTime() }
+      await this.ctx.model.create('intakeDraft', { ...draft, messages: '[]', updatedAt: new Date(draft.updatedAt) })
+      return draft
+    })
   }
   async append(userId: string, sourceSession: string, body: string, incoming: Attachment[]): Promise<DraftCounts> {
-    const draft = await this.get(userId, sourceSession)
-    if (!draft) throw new Error('草稿不存在或已过期，请重新开始。')
-    const stored: Attachment[] = []
-    for (const attachment of incoming) stored.push(await this.attachments.copy(attachment, draft))
-    const message: DraftMessage = { body: body.trim(), attachments: stored, createdAt: this.now().getTime() }
-    draft.messages.push(message)
-    draft.updatedAt = message.createdAt
-    await this.ctx.model.set('intakeDraft', { key: draft.key }, { messages: JSON.stringify(draft.messages), updatedAt: new Date(draft.updatedAt) })
-    return countDraft(draft)
+    const key = draftKey(userId, sourceSession)
+    return withKeyLock(this.operationLocks, key, async () => {
+      const draft = await this.get(userId, sourceSession)
+      if (!draft) throw new Error('草稿不存在或已过期，请重新开始。')
+      const stored: Attachment[] = []
+      for (const attachment of incoming) stored.push(await this.attachments.copy(attachment, draft))
+      const message: DraftMessage = { body: body.trim(), attachments: stored, createdAt: this.now().getTime() }
+      draft.messages.push(message)
+      draft.updatedAt = message.createdAt
+      await this.ctx.model.set('intakeDraft', { submitterId: userId, sourceSession }, { messages: JSON.stringify(draft.messages), updatedAt: new Date(draft.updatedAt) })
+      return countDraft(draft)
+    })
   }
   async cancel(userId: string, sourceSession: string) {
-    const draft = await this.get(userId, sourceSession)
-    if (!draft) return false
-    await this.ctx.model.remove('intakeDraft', { key: draft.key })
-    return true
+    const key = draftKey(userId, sourceSession)
+    return withKeyLock(this.operationLocks, key, async () => {
+      const draft = await this.get(userId, sourceSession)
+      if (!draft) return false
+      await this.ctx.model.remove('intakeDraft', { submitterId: userId, sourceSession })
+      return true
+    })
   }
   async submit(userId: string, sourceSession: string): Promise<IntakeRecord> {
-    const draft = await this.get(userId, sourceSession)
-    if (!draft) throw new Error('草稿不存在或已过期，请重新开始。')
-    if (!draft.messages.length) throw new Error('草稿还是空的，请先发送内容。')
-    const record = await this.records.create({
-      type: draft.type,
-      submitterId: draft.submitterId,
-      sourceSession: draft.sourceSession,
-      body: draft.messages.map(item => item.body).filter(Boolean).join('\n\n'),
-      messages: draft.messages,
-      attachments: draft.messages.flatMap(item => item.attachments),
+    const key = draftKey(userId, sourceSession)
+    return withKeyLock(this.operationLocks, key, async () => {
+      const draft = await this.get(userId, sourceSession)
+      if (!draft) throw new Error('草稿不存在或已过期，请重新开始。')
+      if (!draft.messages.length) throw new Error('草稿还是空的，请先发送内容。')
+      const record = await this.records.create({
+        type: draft.type,
+        submitterId: draft.submitterId,
+        sourceSession: draft.sourceSession,
+        body: draft.messages.map(item => item.body).filter(Boolean).join('\n\n'),
+        messages: draft.messages,
+        attachments: draft.messages.flatMap(item => item.attachments),
+      })
+      await this.ctx.model.remove('intakeDraft', { submitterId: userId, sourceSession })
+      return record
     })
-    await this.ctx.model.remove('intakeDraft', { key: draft.key })
-    return record
   }
 }
 
@@ -594,6 +627,16 @@ export function apply(ctx: Context, config: Config) {
     const result = await outbox.enqueueAndDeliver(record, targets)
     return result.delivered ? `已提交 ${record.id}，管理员通知已送达。` : `已提交 ${record.id}；记录已保存，但管理员通知暂时延迟。`
   }
+  const claimWithAcceptanceNotice = async (id: string, assigneeId: string) => {
+    const claimed = await store.claim(id, assigneeId)
+    if (claimed.assigneeId === assigneeId) {
+      await store.deliverAcceptanceNotice(claimed.id, record => transport.notifySubmitter(
+        record.submitterId,
+        `${record.id} 已由管理员 ${assigneeId} 认领；管理员将通过 QQ 直接联系你。`,
+      ))
+    }
+    return claimed
+  }
   const start = async (session: any, type: IntakeType) => {
     if (!configuredTargets(config.targets[type]).length) return '此类型尚未配置通知目标，暂时无法开始收集。'
     try {
@@ -630,9 +673,8 @@ export function apply(ctx: Context, config: Config) {
       if (!current) return '记录不存在。'
       try {
         if (action === '认领') {
-          const claimed = await store.claim(current.id, userId)
+          const claimed = await claimWithAcceptanceNotice(current.id, userId)
           if (claimed.assigneeId !== userId) return `${claimed.id} 已由 ${claimed.assigneeId} 认领。`
-          await store.deliverAcceptanceNotice(claimed.id, record => transport.notifySubmitter(record.submitterId, `${record.id} 已由管理员 ${userId} 认领；管理员将通过 QQ 直接联系你。`))
           return `已认领 ${claimed.id}。`
         }
         const transfer = /^转交\s+(\d+)$/.exec(action)
@@ -680,7 +722,7 @@ export function apply(ctx: Context, config: Config) {
   administratorCommand('intake.admin.get <id>', 'read', async (_s, id) => { const r = await store.get(id); return r ? formatRecord(r) : '记录不存在。' })
   administratorCommand('intake.admin.status <id> <status>', 'write', async (s, id, status) => { try { return formatRecord(await store.setHandlingStatus(id, status as IntakeStatus, s.userId)) } catch (e) { return (e as Error).message } })
   administratorCommand('intake.admin.note <id> <note:text>', 'write', async (_s, id, note) => { try { return formatRecord(await store.addNote(id, note)) } catch (e) { return (e as Error).message } })
-  administratorCommand('intake.admin.claim <id>', 'write', async (s, id) => { try { return formatRecord(await store.claim(id, s.userId)) } catch (e) { return (e as Error).message } })
+  administratorCommand('intake.admin.claim <id>', 'write', async (s, id) => { try { return formatRecord(await claimWithAcceptanceNotice(id, s.userId)) } catch (e) { return (e as Error).message } })
   administratorCommand('intake.admin.transfer <id> <qq>', 'write', async (s, id, qq) => { try { return formatRecord(await store.transfer(id, await requireExplicitAdministratorTarget(qq), s.userId)) } catch (e) { return (e as Error).message } })
   administratorCommand('intake.admin.unassign <id>', 'write', async (s, id) => { try { return formatRecord(await store.clearAssignment(id, s.userId)) } catch (e) { return (e as Error).message } })
   administratorCommand('intake.admin.close <id>', 'write', async (s, id) => { try { return formatRecord(await store.close(id, s.userId)) } catch (e) { return (e as Error).message } })
