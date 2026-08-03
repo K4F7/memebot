@@ -3,7 +3,7 @@ import { access, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/prom
 import { dirname, join, resolve, sep } from 'node:path'
 import { Context, h, Schema } from 'koishi'
 import type { AccessDecision, AccessSession } from 'koishi-plugin-memebot-access'
-import { ArchiveCleanupJob, ArchivePreflight, BackupContext, BackupStatusSink, PersistentArchiveBackupQueue, PersistentArchiveCleanupQueue, WorkPreviewStore } from './extensions'
+import { ArchiveBackupJob, ArchiveCleanupJob, ArchivePreflight, BackupContext, BackupStatusSink, PersistentArchiveBackupQueue, PersistentArchiveCleanupQueue, safeArchiveDiagnostic, WorkPreviewStore } from './extensions'
 import { S3R2Store } from './s3'
 
 export { ArchivePreflight, PersistentArchiveBackupQueue, PersistentArchiveCleanupQueue, WorkPreviewStore } from './extensions'
@@ -455,6 +455,7 @@ export interface ArchiveBackupQueue {
   runDue?(): Promise<void>
   retryNow?(recordId?: string): Promise<void>
   counts?(): Promise<{ pending: number; failed: number; complete: number }>
+  list?(recordId?: string): Promise<ArchiveBackupJob[]>
 }
 
 export interface ArchiveCleanupQueue {
@@ -632,7 +633,7 @@ export class LocalAttachmentStore {
       delete attachment.r2.error
     } catch (error) {
       attachment.r2.syncState = 'failed'
-      attachment.r2.error = error instanceof Error ? error.message : String(error)
+      attachment.r2.error = safeArchiveDiagnostic(error)
     }
     return attachment
   }
@@ -1160,7 +1161,7 @@ export class ArchiveService {
   }
 
   private safeError(error: unknown) {
-    let message = error instanceof Error ? error.message : String(error)
+    let message = safeArchiveDiagnostic(error)
     for (const secret of [this.config.r2.accessKeyId, this.config.r2.secretAccessKey].filter(Boolean)) message = message.replaceAll(secret, '***')
     return message
   }
@@ -1309,17 +1310,34 @@ export class ArchiveConsoleFeatures {
     const consoleActor: ArchiveSession = { userId: 'console' }
     consoleService.addListener('memebot/archive/status', async () => {
       const health = this.preflight ? await this.preflight.check() : { state: 'ready' as const, lastCheck: new Date().toISOString(), stores: { local: { ok: true }, r2: { enabled: false } } }
-      const queue = this.queue?.counts ? await this.queue.counts() : { pending: 0, failed: 0, complete: 0 }
-      try { await this.ready; return { ...health, queue } } catch (error) { return { ...health, state: 'unavailable', error: error instanceof Error ? error.message : String(error), queue } }
+      const emptyQueue = { pending: 0, failed: 0, complete: 0 }
+      try {
+        await this.ready
+        const queue = this.queue?.counts ? await this.queue.counts() : emptyQueue
+        return { ...health, queue }
+      } catch (error) {
+        return { ...health, state: 'unavailable', error: safeArchiveDiagnostic(error), queue: emptyQueue }
+      }
     }, authenticated)
     consoleService.addListener('memebot/archive/recheck', async () => this.preflight?.check(), authenticated)
-    consoleService.addListener('memebot/archive/backup/retry', async (recordId?: string) => { await this.queue?.retryNow?.(recordId); return this.queue?.counts?.() }, authenticated)
-    const cleanupStatus = async () => ({
-      counts: this.cleanupQueue?.counts ? await this.cleanupQueue.counts() : { pending: 0, failed: 0, complete: 0 },
-      jobs: this.cleanupQueue?.list ? await this.cleanupQueue.list() : [],
-    })
+    const backupStatus = async () => {
+      await this.ready
+      return {
+        counts: this.queue?.counts ? await this.queue.counts() : { pending: 0, failed: 0, complete: 0 },
+        jobs: this.queue?.list ? await this.queue.list() : [],
+      }
+    }
+    consoleService.addListener('memebot/archive/backup/status', backupStatus, authenticated)
+    consoleService.addListener('memebot/archive/backup/retry', async (recordId?: string) => { await this.ready; await this.queue?.retryNow?.(recordId); return backupStatus() }, authenticated)
+    const cleanupStatus = async () => {
+      await this.ready
+      return {
+        counts: this.cleanupQueue?.counts ? await this.cleanupQueue.counts() : { pending: 0, failed: 0, complete: 0 },
+        jobs: this.cleanupQueue?.list ? await this.cleanupQueue.list() : [],
+      }
+    }
     consoleService.addListener('memebot/archive/cleanup/status', cleanupStatus, authenticated)
-    consoleService.addListener('memebot/archive/cleanup/retry', async (recordId?: string) => { await this.cleanupQueue?.retryNow?.(recordId); return cleanupStatus() }, authenticated)
+    consoleService.addListener('memebot/archive/cleanup/retry', async (recordId?: string) => { await this.ready; await this.cleanupQueue?.retryNow?.(recordId); return cleanupStatus() }, authenticated)
     consoleService.addListener('memebot/archive/papers', async (query?: string) => { await this.ready; return this.service.searchIssues(query) }, authenticated)
     consoleService.addListener('memebot/archive/paper/details', async (id: string) => { await this.ready; return this.service.getPaperDetails(id) }, authenticated)
     consoleService.addListener('memebot/archive/paper/create', async (input: IssueInput) => {
@@ -1515,7 +1533,7 @@ export function apply(ctx: Context, config: Config) {
       if ((await session.prompt(300000))?.trim() !== '确认') return '已取消发布。'
       const paper = await service.publishIssue(archiveSession, input)
       return `已发布 Paper ${paper.id}。`
-    } catch (error) { return error instanceof Error ? error.message : String(error) }
+    } catch (error) { return safeArchiveDiagnostic(error) }
   })
   root.subcommand('.publish.works', '引导发布一个 ZIP Work Package').action(async ({ session }) => {
     await ready
@@ -1543,7 +1561,7 @@ export function apply(ctx: Context, config: Config) {
       if ((await session.prompt(300000))?.trim() !== '确认') return '已取消发布。'
       const work = await service.publishWork(archiveSession, input)
       return `已发布 Work ${work.id}。`
-    } catch (error) { return error instanceof Error ? error.message : String(error) }
+    } catch (error) { return safeArchiveDiagnostic(error) }
   })
   root.subcommand('.edit.paper <id:string>', '引导编辑 Paper 元数据').action(async ({ session }, id) => {
     await ready

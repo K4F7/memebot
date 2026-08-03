@@ -40,7 +40,7 @@ describe('archive integration paths', () => {
     expect(listeners).toEqual(expect.arrayContaining([
       'memebot/archive/papers', 'memebot/archive/paper/create', 'memebot/archive/paper/upload',
       'memebot/archive/paper/preview', 'memebot/archive/paper/edit', 'memebot/archive/paper/download', 'memebot/archive/paper/details',
-      'memebot/archive/status', 'memebot/archive/recheck', 'memebot/archive/backup/retry',
+      'memebot/archive/status', 'memebot/archive/recheck', 'memebot/archive/backup/status', 'memebot/archive/backup/retry',
       'memebot/archive/works', 'memebot/archive/work/create', 'memebot/archive/work/upload',
       'memebot/archive/work/tree', 'memebot/archive/work/preview', 'memebot/archive/work/download', 'memebot/archive/work/details',
       'memebot/archive/appearance/save', 'memebot/archive/appearance/remove',
@@ -63,10 +63,21 @@ describe('archive integration paths', () => {
       list: vi.fn(async () => [{ id: 'job-1', recordKind: 'work', recordId: 'W1', objectKeys: ['archive.zip'], state: 'failed', attempts: 1, nextAttemptAt: new Date(), error: 'R2 unavailable' }]),
       retryNow: vi.fn(async () => undefined),
     }
+    const backup = {
+      counts: vi.fn(async () => ({ pending: 0, failed: 1, complete: 0 })),
+      list: vi.fn(async () => [{ id: 'backup-1', recordKind: 'paper', recordId: 'P1', state: 'failed', attempts: 2, nextAttemptAt: new Date(), error: 'R2 unavailable' }]),
+      retryNow: vi.fn(async () => undefined),
+    }
     const service = new ArchiveService({ config: { localPath: root }, db: {
       works: [{ id: 'W1', title: 'Removed', author: 'Alice', publishedAt: new Date(), lifecycle: 'removed' }],
     } })
-    new ArchiveConsoleFeatures(ctx, service, Promise.resolve(), undefined, undefined, cleanup).register()
+    new ArchiveConsoleFeatures(ctx, service, Promise.resolve(), undefined, backup, cleanup).register()
+
+    await expect(handlers.get('memebot/archive/backup/status')!()).resolves.toMatchObject({
+      counts: { failed: 1 }, jobs: [expect.objectContaining({ recordId: 'P1', error: 'R2 unavailable' })],
+    })
+    await handlers.get('memebot/archive/backup/retry')!('P1')
+    expect(backup.retryNow).toHaveBeenCalledWith('P1')
 
     await expect(handlers.get('memebot/archive/cleanup/status')!()).resolves.toMatchObject({
       counts: { failed: 1 }, jobs: [expect.objectContaining({ recordId: 'W1', error: 'R2 unavailable' })],
@@ -77,6 +88,53 @@ describe('archive integration paths', () => {
     await expect(handlers.get('memebot/archive/record/purge')!('W1', 'W1')).resolves.toMatchObject({ id: 'W1', lifecycle: 'purged' })
     await expect(handlers.get('memebot/archive/record/anonymize')!('W1', 'Y')).rejects.toThrow('Archive Identifier')
     await expect(handlers.get('memebot/archive/record/anonymize')!('W1', 'W1')).resolves.toMatchObject({ id: 'W1', author: '已匿名' })
+  })
+  it('waits for Archive initialization before reading or retrying backup jobs', async () => {
+    const root = await tempRoot()
+    const handlers = new Map<string, (...args: any[]) => Promise<any>>()
+    const ctx = { get: () => ({ addEntry() {}, addListener(name: string, handler: (...args: any[]) => Promise<any>) { handlers.set(name, handler) } }) } as any
+    let resolveReady!: () => void
+    const ready = new Promise<void>((resolve) => { resolveReady = resolve })
+    const backup = {
+      counts: vi.fn(async () => ({ pending: 0, failed: 0, complete: 0 })),
+      list: vi.fn(async () => []),
+      retryNow: vi.fn(async () => undefined),
+    }
+    const cleanup = {
+      counts: vi.fn(async () => ({ pending: 0, failed: 0, complete: 0 })),
+      list: vi.fn(async () => []),
+      retryNow: vi.fn(async () => undefined),
+    }
+    new ArchiveConsoleFeatures(ctx, new ArchiveService({ config: { localPath: root } }), ready, undefined, backup, cleanup).register()
+
+    const statusRequest = handlers.get('memebot/archive/backup/status')!()
+    const retryRequest = handlers.get('memebot/archive/backup/retry')!('P1')
+    const cleanupStatusRequest = handlers.get('memebot/archive/cleanup/status')!()
+    const cleanupRetryRequest = handlers.get('memebot/archive/cleanup/retry')!('P1')
+    await Promise.resolve()
+    expect(backup.counts).not.toHaveBeenCalled()
+    expect(backup.retryNow).not.toHaveBeenCalled()
+    expect(cleanup.counts).not.toHaveBeenCalled()
+    expect(cleanup.retryNow).not.toHaveBeenCalled()
+    resolveReady()
+    await Promise.all([statusRequest, retryRequest, cleanupStatusRequest, cleanupRetryRequest])
+    expect(backup.counts).toHaveBeenCalled()
+    expect(backup.retryNow).toHaveBeenCalledWith('P1')
+    expect(cleanup.counts).toHaveBeenCalled()
+    expect(cleanup.retryNow).toHaveBeenCalledWith('P1')
+  })
+  it('does not expose initialization paths through the storage status endpoint', async () => {
+    const root = await tempRoot()
+    const handlers = new Map<string, (...args: any[]) => Promise<any>>()
+    const ctx = { get: () => ({ addEntry() {}, addListener(name: string, handler: (...args: any[]) => Promise<any>) { handlers.set(name, handler) } }) } as any
+    const ready = Promise.reject(new Error('database failed at /var/lib/memebot/archive.db'))
+    const backup = { counts: vi.fn(async () => ({ pending: 1, failed: 0, complete: 0 })) }
+    new ArchiveConsoleFeatures(ctx, new ArchiveService({ config: { localPath: root } }), ready, undefined, backup).register()
+
+    const status = await handlers.get('memebot/archive/status')!()
+    expect(status).toMatchObject({ state: 'unavailable', error: expect.stringContaining('[路径已隐藏]') })
+    expect(status.error).not.toContain('/var/lib')
+    expect(backup.counts).not.toHaveBeenCalled()
   })
   it('declares Access as required and delegates QQ read/write authorization with the full session', async () => {
     expect(inject).toContain('access')
@@ -139,7 +197,7 @@ describe('archive integration paths', () => {
       data: undefined as Uint8Array | undefined,
       async put(_key: string, data: Uint8Array) {
         attempts += 1
-        if (attempts === 1) throw new Error('R2 unavailable')
+        if (attempts === 1) throw new Error('R2 unavailable at /var/lib/memebot/archive.pdf')
         this.data = data
       },
       async get() { return this.data },
@@ -150,6 +208,8 @@ describe('archive integration paths', () => {
       attachment: { filename: 'august.pdf', contentType: 'application/pdf', data: '%PDF-1.7\n%%EOF' },
     })
     expect(issue.attachment?.r2?.syncState).toBe('failed')
+    expect(issue.attachment?.r2?.error).toContain('[路径已隐藏]')
+    expect(issue.attachment?.r2?.error).not.toContain('/var/lib')
     expect(issue.id).toBe('P1')
     await service.retryPending()
     expect(issue.attachment?.r2?.syncState).toBe('synced')

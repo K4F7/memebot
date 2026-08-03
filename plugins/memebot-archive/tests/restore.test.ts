@@ -44,6 +44,18 @@ function manifest(kind: 'paper' | 'work', record: Record<string, unknown>, check
 }
 
 describe('R2 manifest restoration', () => {
+  it('does not persist local paths in failed recovery audit details', async () => {
+    const root = await tempRoot(); const ctx = fakeContext(); const r2 = new MemoryR2Store()
+    r2.list = async () => { throw new Error('EACCES: scan /var/lib/memebot/manifests') }
+    const service = new ArchiveService({ config: { localPath: root }, metadata: new KoishiArchiveMetadataRepository(ctx as any), r2 })
+    await service.initialize()
+
+    await expect(service.previewRestore(admin)).rejects.toThrow('EACCES')
+    const [audit] = await service.restoreHistory(admin)
+    expect(audit.details).toContain('[路径已隐藏]')
+    expect(audit.details).not.toContain('/var/lib')
+  })
+
   it('previews and safely imports a missing Paper plus its attachment and audit record', async () => {
     const root = await tempRoot(); const ctx = fakeContext(); const r2 = new MemoryR2Store()
     const bytes = new TextEncoder().encode('%PDF-1.7\n%%EOF'); const checksum = createHash('sha256').update(bytes).digest('hex')

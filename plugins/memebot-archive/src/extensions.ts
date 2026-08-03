@@ -69,7 +69,7 @@ export class ArchivePreflight {
     } finally { await this.r2!.delete(key).catch(() => undefined) }
   }
   private safeError(error: unknown) {
-    let message = error instanceof Error ? error.message : String(error)
+    let message = safeArchiveDiagnostic(error)
     for (const secret of this.secrets.filter(Boolean)) message = message.replaceAll(secret, '***')
     return message
   }
@@ -84,7 +84,7 @@ interface QueueContext { model: QueueModel }
 interface QueueLocal { read(attachment: ExtensionAttachment): Promise<Uint8Array> }
 export interface BackupContext { recordKind: 'paper' | 'work'; recordId: string; manifest: unknown }
 export interface BackupStatusSink { update(kind: 'paper' | 'work', id: string, state: 'pending' | 'failed' | 'complete', error?: string): Promise<void> }
-interface BackupJob {
+interface BackupJobRow {
   id: string
   recordKind: 'paper' | 'work'
   recordId: string
@@ -96,8 +96,26 @@ interface BackupJob {
   error: string
 }
 
+export interface ArchiveBackupJob {
+  id: string
+  recordKind: 'paper' | 'work'
+  recordId: string
+  state: 'pending' | 'failed' | 'complete'
+  attempts: number
+  nextAttemptAt: Date
+  error: string
+  lastAttempt?: string
+}
+
 const backupRetry = [60_000, 5 * 60_000, 30 * 60_000]
 const backupDelay = (attempts: number) => attempts <= 3 ? backupRetry[attempts - 1] : 6 * 60 * 60_000
+export function safeArchiveDiagnostic(error: unknown) {
+  return (error instanceof Error ? error.message : String(error))
+    .split(/\r?\n\s*at\s+|\s+at\s+(?=[\w$.<]+\s*\()/, 1)[0]
+    .replace(/(['"])(?:[A-Za-z]:[\\/]|\/)[^'"\r\n]+\1/g, '$1[路径已隐藏]$1')
+    .replace(/\b[A-Za-z]:[\\/][^\s,;]+/g, '[路径已隐藏]')
+    .replace(/(^|[\s(])\/(?!\/)[^\s,;)'"\r\n]+/g, '$1[路径已隐藏]')
+}
 
 export class PersistentArchiveBackupQueue {
   private running?: Promise<void>
@@ -119,26 +137,42 @@ export class PersistentArchiveBackupQueue {
     await this.sink.update(context.recordKind, context.recordId, 'pending')
   }
   async runDue() {
-    if (this.running) return this.running
-    this.running = (async () => {
-      const jobs = await this.ctx.model.get('archiveBackupJob', {}) as BackupJob[]
+    return this.serialized(async () => {
+      const jobs = await this.ctx.model.get('archiveBackupJob', {}) as BackupJobRow[]
       for (const job of jobs) if (job.state !== 'complete' && new Date(job.nextAttemptAt).getTime() <= this.now().getTime()) await this.run(job)
-    })()
-    try { await this.running } finally { this.running = undefined }
+    })
   }
   async retryNow(recordId?: string) {
-    const jobs = await this.ctx.model.get('archiveBackupJob', recordId ? { recordId } : {}) as BackupJob[]
-    for (const job of jobs) if (job.state !== 'complete') { await this.ctx.model.set('archiveBackupJob', { id: job.id }, { nextAttemptAt: this.now(), state: 'pending' }); await this.run({ ...job, nextAttemptAt: this.now(), state: 'pending' }) }
+    return this.serialized(async () => {
+      const jobs = await this.ctx.model.get('archiveBackupJob', recordId ? { recordId } : {}) as BackupJobRow[]
+      for (const job of jobs) if (job.state !== 'complete') { await this.ctx.model.set('archiveBackupJob', { id: job.id }, { nextAttemptAt: this.now(), state: 'pending' }); await this.run({ ...job, nextAttemptAt: this.now(), state: 'pending' }) }
+    })
   }
   async counts() {
-    const jobs = await this.ctx.model.get('archiveBackupJob', {}) as BackupJob[]
+    const jobs = await this.ctx.model.get('archiveBackupJob', {}) as BackupJobRow[]
     return {
       pending: jobs.filter(job => job.state === 'pending').length,
       failed: jobs.filter(job => job.state === 'failed').length,
       complete: jobs.filter(job => job.state === 'complete').length,
     }
   }
-  private async run(job: BackupJob) {
+  async list(recordId?: string): Promise<ArchiveBackupJob[]> {
+    const jobs = await this.ctx.model.get('archiveBackupJob', recordId ? { recordId } : {}) as BackupJobRow[]
+    return jobs.map((job) => {
+      const attachment = JSON.parse(job.attachment) as ExtensionAttachment
+      return {
+        id: job.id,
+        recordKind: job.recordKind,
+        recordId: job.recordId,
+        state: job.state,
+        attempts: job.attempts,
+        nextAttemptAt: new Date(job.nextAttemptAt),
+        error: safeArchiveDiagnostic(job.error),
+        lastAttempt: attachment.r2?.lastAttempt,
+      }
+    }).sort((a, b) => Number(a.state === 'complete') - Number(b.state === 'complete') || b.nextAttemptAt.getTime() - a.nextAttemptAt.getTime() || a.id.localeCompare(b.id))
+  }
+  private async run(job: BackupJobRow) {
     const attachment = JSON.parse(job.attachment) as ExtensionAttachment
     const objectKey = attachment.r2?.objectKey ?? attachment.relativePath
     const suffix = `/${attachment.relativePath}`
@@ -153,12 +187,18 @@ export class PersistentArchiveBackupQueue {
       await this.sink.update(job.recordKind, job.recordId, 'complete')
     } catch (error) {
       const attempts = job.attempts + 1
-      const message = error instanceof Error ? error.message : String(error)
+      const message = safeArchiveDiagnostic(error)
       attachment.r2 ??= { objectKey, syncState: 'pending' }
       attachment.r2.syncState = 'failed'; attachment.r2.lastAttempt = this.now().toISOString(); attachment.r2.error = message
       await this.ctx.model.set('archiveBackupJob', { id: job.id }, { state: 'failed', attempts, nextAttemptAt: new Date(this.now().getTime() + backupDelay(attempts)), error: message, attachment: JSON.stringify(attachment) })
       await this.sink.update(job.recordKind, job.recordId, 'failed', message)
     }
+  }
+  private async serialized(operation: () => Promise<void>) {
+    while (this.running) await this.running
+    const running = operation()
+    this.running = running
+    try { await running } finally { if (this.running === running) this.running = undefined }
   }
 }
 
@@ -223,6 +263,7 @@ export class PersistentArchiveCleanupQueue {
       ...job,
       objectKeys: JSON.parse(job.objectKeys) as string[],
       nextAttemptAt: new Date(job.nextAttemptAt),
+      error: safeArchiveDiagnostic(job.error),
     })).sort((a, b) => rank[a.state] - rank[b.state]
       || b.nextAttemptAt.getTime() - a.nextAttemptAt.getTime()
       || a.recordId.localeCompare(b.recordId))
@@ -233,7 +274,7 @@ export class PersistentArchiveCleanupQueue {
       await this.ctx.model.set('archiveCleanupJob', { id: job.id }, { state: 'complete', error: '' })
     } catch (error) {
       const attempts = job.attempts + 1
-      const message = error instanceof Error ? error.message : String(error)
+      const message = safeArchiveDiagnostic(error)
       await this.ctx.model.set('archiveCleanupJob', { id: job.id }, { state: 'failed', attempts, nextAttemptAt: new Date(this.now().getTime() + backupDelay(attempts)), error: message })
     }
   }
