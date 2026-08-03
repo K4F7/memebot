@@ -124,6 +124,19 @@ describe('Archive removal and recovery lifecycle', () => {
     expect(await cleanup.counts()).toEqual({ pending: 0, failed: 0, complete: 1 })
   })
 
+  it('does not expose local paths in cleanup diagnostics', async () => {
+    const context = fakeContext()
+    const r2 = new MemoryR2Store()
+    r2.delete = async () => { throw new Error('EACCES: unlink /var/lib/memebot/archive.pdf') }
+    const cleanup = new PersistentArchiveCleanupQueue(context as any, r2)
+    await cleanup.enqueue('paper', 'P1', ['paper.pdf'])
+    await cleanup.runDue()
+
+    const [job] = await cleanup.list()
+    expect(job.error).toContain('[路径已隐藏]')
+    expect(job.error).not.toContain('/var/lib')
+  })
+
   it('retires a replaced attachment for 30 days and can restore the prior version', async () => {
     const root = await tempRoot(); const context = fakeContext(); let now = new Date('2026-08-02T00:00:00Z')
     const service = new ArchiveService({ config: { localPath: root }, metadata: new KoishiArchiveMetadataRepository(context as any), now: () => now })

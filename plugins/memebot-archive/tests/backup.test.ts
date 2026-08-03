@@ -31,10 +31,11 @@ describe('archive preflight and persistent backup', () => {
     let diagnostic: Uint8Array | undefined
     const healthy = { async put(_key: string, data: Uint8Array) { diagnostic = data }, async get() { return diagnostic }, async delete() { diagnostic = undefined } }
     expect((await new ArchivePreflight(root, healthy).check()).state).toBe('ready')
-    const brokenR2 = { async put() { throw new Error('credential abc-secret rejected') }, async get() { return undefined }, async delete() {} }
+    const brokenR2 = { async put() { throw new Error('credential abc-secret rejected at /var/lib/memebot/r2') }, async get() { return undefined }, async delete() {} }
     const degraded = await new ArchivePreflight(root, brokenR2, ['abc-secret']).check()
     expect(degraded.state).toBe('degraded')
     expect(JSON.stringify(degraded)).not.toContain('abc-secret')
+    expect(JSON.stringify(degraded)).not.toContain('/var/lib')
     const unavailable = await new ArchivePreflight(join(root, 'not-a-directory', 'nested'), undefined, [], async () => { throw new Error('local denied') }).check()
     expect(unavailable.state).toBe('unavailable')
   })
@@ -57,6 +58,9 @@ describe('archive preflight and persistent backup', () => {
     await queue.enqueue(attachment, { recordKind: 'paper', recordId: 'P1', manifest: { id: 'P1', title: 'Paper' } })
     await queue.runDue()
     expect((await queue.counts()).failed).toBe(1)
+    expect(await queue.list()).toEqual([
+      expect.objectContaining({ recordKind: 'paper', recordId: 'P1', state: 'failed', attempts: 1, error: 'offline' }),
+    ])
 
     now = new Date('2026-08-02T00:01:00Z')
     const restarted = new PersistentArchiveBackupQueue(ctx, local, r2, { update: async (_kind, _id, state) => { states.push(state) } }, () => now)
@@ -92,5 +96,60 @@ describe('archive preflight and persistent backup', () => {
     expect(states.at(-1)).toBe('failed'); expect((await queue.counts()).complete).toBe(0)
     now = new Date('2026-08-02T00:01:00Z'); await queue.runDue()
     expect(states.at(-1)).toBe('complete'); expect((await queue.counts()).complete).toBe(1)
+  })
+
+  it('serializes an immediate retry behind an in-flight scheduled backup', async () => {
+    const root = await tempRoot(); const ctx = fakeContext() as any
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let markStarted!: () => void
+    const started = new Promise<void>((resolve) => { markStarted = resolve })
+    let puts = 0
+    const r2 = { async put() { puts += 1; markStarted(); await gate }, async get() { return undefined }, async delete() {} }
+    const local = new LocalAttachmentStore(root, r2)
+    const attachment = await local.save('P1', { filename: 'paper.pdf', data: '%PDF-1.7\n%%EOF' })
+    const queue = new PersistentArchiveBackupQueue(ctx, local, r2, { async update() {} })
+    await queue.enqueue(attachment, { recordKind: 'paper', recordId: 'P1', manifest: { id: 'P1' } })
+
+    const scheduled = queue.runDue()
+    await started
+    const retry = queue.retryNow('P1')
+    await Promise.resolve()
+    const concurrentPuts = puts
+    release()
+    await Promise.all([scheduled, retry])
+    expect(concurrentPuts).toBe(1)
+    expect(puts).toBe(2)
+  })
+
+  it('does not expose local absolute paths in backup diagnostics', async () => {
+    const root = await tempRoot(); const ctx = fakeContext() as any
+    let sinkError = ''
+    const r2 = { async put() { throw new Error("ENOENT: open 'D:\\private\\archive\\paper.pdf'") }, async get() { return undefined }, async delete() {} }
+    const local = new LocalAttachmentStore(root, r2)
+    const attachment = await local.save('P1', { filename: 'paper.pdf', data: '%PDF-1.7\n%%EOF' })
+    const queue = new PersistentArchiveBackupQueue(ctx, local, r2, { async update(_kind, _id, _state, error) { sinkError = error || '' } })
+    await queue.enqueue(attachment, { recordKind: 'paper', recordId: 'P1', manifest: { id: 'P1' } })
+    await queue.runDue()
+
+    const [job] = await queue.list()
+    expect(job.error).toContain('[路径已隐藏]')
+    expect(job.error).not.toContain('D:\\private')
+    expect(sinkError).toContain('[路径已隐藏]')
+    expect(sinkError).not.toContain('D:\\private')
+  })
+
+  it('does not expose unquoted Unix paths in backup diagnostics', async () => {
+    const root = await tempRoot(); const ctx = fakeContext() as any
+    const r2 = { async put() { throw new Error('EACCES: open /var/lib/archive/paper.pdf') }, async get() { return undefined }, async delete() {} }
+    const local = new LocalAttachmentStore(root, r2)
+    const attachment = await local.save('P1', { filename: 'paper.pdf', data: '%PDF-1.7\n%%EOF' })
+    const queue = new PersistentArchiveBackupQueue(ctx, local, r2, { async update() {} })
+    await queue.enqueue(attachment, { recordKind: 'paper', recordId: 'P1', manifest: { id: 'P1' } })
+    await queue.runDue()
+
+    const [job] = await queue.list()
+    expect(job.error).toContain('[路径已隐藏]')
+    expect(job.error).not.toContain('/var/lib')
   })
 })
