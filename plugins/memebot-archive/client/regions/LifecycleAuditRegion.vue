@@ -253,13 +253,23 @@ function actionLabel(action: LifecycleAuditEntry['action']) {
     </k-card>
 
     <k-card class="lifecycle-section" title="生命周期历史">
-      <el-table :data="history" row-key="id" empty-text="尚无生命周期历史" aria-label="生命周期历史">
-        <el-table-column label="时间" min-width="180"><template #default="scope">{{ formatDate(scope.row.createdAt) }}</template></el-table-column>
-        <el-table-column prop="recordId" label="Archive Item" width="120" />
-        <el-table-column label="动作" width="110"><template #default="scope">{{ actionLabel(scope.row.action) }}</template></el-table-column>
-        <el-table-column prop="actor" label="操作者" min-width="140" />
-        <el-table-column prop="details" label="详情" min-width="220" />
-      </el-table>
+      <div class="desktop-lifecycle">
+        <el-table :data="history" row-key="id" empty-text="尚无生命周期历史" aria-label="生命周期历史">
+          <el-table-column label="时间" min-width="180"><template #default="scope">{{ formatDate(scope.row.createdAt) }}</template></el-table-column>
+          <el-table-column prop="recordId" label="Archive Item" width="120" />
+          <el-table-column label="动作" width="110"><template #default="scope">{{ actionLabel(scope.row.action) }}</template></el-table-column>
+          <el-table-column prop="actor" label="操作者" min-width="140" />
+          <el-table-column prop="details" label="详情" min-width="220" />
+        </el-table>
+      </div>
+      <div class="mobile-lifecycle" aria-label="生命周期历史卡片">
+        <article v-for="entry in history" :key="entry.id" class="lifecycle-card">
+          <strong>{{ entry.recordId }} · {{ actionLabel(entry.action) }}</strong>
+          <span>{{ formatDate(entry.createdAt) }} · {{ entry.actor }}</span>
+          <small>{{ entry.details || '—' }}</small>
+        </article>
+        <el-empty v-if="!history.length" description="尚无生命周期历史" />
+      </div>
     </k-card>
 
     <LifecycleActionDialog
@@ -329,7 +339,7 @@ function actionLabel(action: LifecycleAuditEntry['action']) {
   justify-content: flex-start;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 767px) {
   .summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

@@ -13,6 +13,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
+  closed: []
 }>()
 
 const title = ref('')
@@ -115,6 +116,7 @@ async function save() {
     :title="dialogTitle"
     width="min(640px, 92vw)"
     :before-close="beforeClose"
+    @closed="emit('closed')"
     @update:model-value="emit('update:modelValue', $event)"
   >
     <el-form label-position="top" @submit.prevent="save">

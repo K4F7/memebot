@@ -67,6 +67,8 @@ describe('Archive Works Console components', () => {
     expect(source).toContain('const work = appearanceWork.value')
     expect(source).toContain('request !== appearanceRequest')
     expect(source).toContain('selection === workSelection')
+    expect(source).toContain("@closed=\"restoreDialogFocus\"")
+    expect(source).toContain('function openPreview()')
     expect(source).toContain('sandbox="allow-downloads"')
     expect(source).not.toMatch(/\bwindow\.(?:alert|confirm|prompt)\s*\(/)
     expect(source).not.toMatch(/\bstyle\s*=/)

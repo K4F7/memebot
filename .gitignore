@@ -26,6 +26,7 @@ yarn-error.log
 dev.stdout.log
 dev.stderr.log
 tsconfig.tsbuildinfo
+/output/playwright/
 
 .eslintcache
 .DS_Store

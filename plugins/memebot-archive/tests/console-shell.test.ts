@@ -35,4 +35,10 @@ describe('Archive Console shell', () => {
     expect(sources).not.toMatch(/(?:^|[^.\w])(?:alert|confirm|prompt)\s*\((?!\s*[A-Za-z_$][\w$]*\s*:)/m)
     expect(sources).not.toMatch(/\bstyle\s*=/)
   })
+
+  it('uses history-producing navigation for browser back and refresh acceptance', async () => {
+    const source = await readFile(join(clientRoot, 'pages/ArchivePage.vue'), 'utf8')
+    expect(source).toContain('router.push')
+    expect(source).not.toContain('router.replace')
+  })
 })
