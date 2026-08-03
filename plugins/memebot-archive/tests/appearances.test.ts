@@ -51,9 +51,22 @@ describe('Publication Appearances', () => {
     expect(first.paperDetailText(paper.id)).toContain('W1 Alice - One · 第3页')
     expect(first.workDetailText(one.id)).toContain('P1 2026-08 Issue · 第3页')
 
+    const stableIdentifiers = { paper: paper.id, work: one.id }
+    await first.associateWork(admin, paper.id.toLowerCase(), { workId: one.id.toLowerCase(), page: '4', section: 'Updated', displayOrder: 3 })
+    expect(first.getPaperDetails(paper.id)?.works.find(item => item.work.id === one.id))
+      .toMatchObject({ page: '4', section: 'Updated', displayOrder: 3 })
+    expect(first.getWorkDetails(one.id)?.papers.find(item => item.paper.id === paper.id))
+      .toMatchObject({ page: '4', section: 'Updated', displayOrder: 3 })
+    expect({ paper: first.getIssue(paper.id)?.id, work: first.getWork(one.id)?.id }).toEqual(stableIdentifiers)
+
+    await first.removeAppearance(admin, paper.id.toLowerCase(), one.id.toLowerCase())
+    expect(first.getPaperDetails(paper.id)?.works.map(item => item.work.id)).toEqual([two.id])
+    expect(first.getWorkDetails(one.id)?.papers.map(item => item.paper.id)).toEqual([secondPaper.id])
+    expect({ paper: first.getIssue(paper.id)?.id, work: first.getWork(one.id)?.id }).toEqual(stableIdentifiers)
+
     const restarted = new ArchiveService({ config: { localPath: root }, metadata }); await restarted.initialize()
-    expect(restarted.getPaperDetails(paper.id)?.works.map(item => item.work.id)).toEqual([one.id, two.id])
-    expect(restarted.getWorkDetails(one.id)?.papers).toHaveLength(2)
+    expect(restarted.getPaperDetails(paper.id)?.works.map(item => item.work.id)).toEqual([two.id])
+    expect(restarted.getWorkDetails(one.id)?.papers.map(item => item.paper.id)).toEqual([secondPaper.id])
   })
 
   it('can create a complete Work while associating it after boundary authorization', async () => {
@@ -62,5 +75,30 @@ describe('Publication Appearances', () => {
     const appearance = await service.associateWork(admin, paper.id, { work: { title: 'Created', author: 'Author', attachment: { filename: 'created.zip', contentType: 'application/zip', data: zip() } }, page: '12' })
     expect(appearance.workId).toBe('W1')
     expect(service.getPaperDetails(paper.id)?.works[0].work.title).toBe('Created')
+  })
+
+  it('does not change in-memory relationships when metadata persistence fails', async () => {
+    const root = await tempRoot(); const context = fakeContext(); const metadata = new KoishiArchiveMetadataRepository(context as any)
+    const service = new ArchiveService({ config: { localPath: root }, metadata }); await service.initialize()
+    const paper = await service.publishIssue(admin, { month: '2026-08', issueNumber: '8', title: 'Issue', attachment: { filename: 'paper.pdf', contentType: 'application/pdf', data: '%PDF-1.7\n%%EOF' } })
+    const work = await service.publishWork(admin, { title: 'One', author: 'Alice', attachment: { filename: 'one.zip', contentType: 'application/zip', data: zip() } })
+    await service.associateWork(admin, paper.id, { workId: work.id, page: '1' })
+
+    const originalSet = context.model.set
+    context.model.set = async (name: string, query: any, patch: any) => {
+      if (name === 'archivePublicationAppearance') throw new Error('metadata unavailable')
+      return originalSet(name, query, patch)
+    }
+    await expect(service.associateWork(admin, paper.id, { workId: work.id, page: '2' })).rejects.toThrow('metadata unavailable')
+    expect(service.getWorkDetails(work.id)?.papers[0].page).toBe('1')
+    context.model.set = originalSet
+
+    const originalRemove = context.model.remove
+    context.model.remove = async (name: string, query: any) => {
+      if (name === 'archivePublicationAppearance') throw new Error('metadata unavailable')
+      return originalRemove(name, query)
+    }
+    await expect(service.removeAppearance(admin, paper.id, work.id)).rejects.toThrow('metadata unavailable')
+    expect(service.getWorkDetails(work.id)?.papers[0].paper.id).toBe(paper.id)
   })
 })
