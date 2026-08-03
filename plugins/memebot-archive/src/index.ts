@@ -1282,11 +1282,16 @@ function payload(value: string | undefined): any {
   try { return JSON.parse(value) } catch { throw new Error('元数据必须是合法 JSON。') }
 }
 
-function decodeConsoleAttachment(input: AttachmentInput): AttachmentInput {
+function decodeAttachmentDataUrl(input: AttachmentInput, maxMb?: number, kind = '附件'): AttachmentInput {
   if (typeof input.data !== 'string' || !input.data.startsWith('data:')) return input
   const match = /^data:([^;,]+)?;base64,(.*)$/s.exec(input.data)
   if (!match) throw new Error('上传内容必须是 base64 data URL。')
-  return { ...input, contentType: input.contentType || match[1] || 'application/octet-stream', data: new Uint8Array(Buffer.from(match[2], 'base64')) }
+  const encoded = match[2].replace(/\s/g, '')
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded) || encoded.length % 4 === 1) throw new Error('上传内容必须是有效的 base64 data URL。')
+  const padding = encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0
+  const decodedBytes = Math.floor(encoded.length * 3 / 4) - padding
+  if (maxMb !== undefined && decodedBytes > maxMb * 1024 * 1024) throw new Error(`${kind}大小超过 ${maxMb} MB 限制`)
+  return { ...input, contentType: input.contentType || match[1] || 'application/octet-stream', data: new Uint8Array(Buffer.from(encoded, 'base64')) }
 }
 
 export class ArchiveConsoleFeatures {
@@ -1297,6 +1302,7 @@ export class ArchiveConsoleFeatures {
     private readonly preflight?: ArchivePreflight,
     private readonly queue?: ArchiveBackupQueue,
     private readonly cleanupQueue?: ArchiveCleanupQueue,
+    private readonly limits: Pick<Config, 'paperMaxMb' | 'workMaxMb'> = { paperMaxMb: 100, workMaxMb: 500 },
   ) {}
   register() {
     const consoleService = this.ctx.get('console')
@@ -1342,12 +1348,12 @@ export class ArchiveConsoleFeatures {
     consoleService.addListener('memebot/archive/paper/details', async (id: string) => { await this.ready; return this.service.getPaperDetails(id) }, authenticated)
     consoleService.addListener('memebot/archive/paper/create', async (input: IssueInput) => {
       await this.ready
-      return this.service.publishIssue(consoleActor, { ...input, attachment: input.attachment && decodeConsoleAttachment(input.attachment) })
+      return this.service.publishIssue(consoleActor, { ...input, attachment: input.attachment && decodeAttachmentDataUrl(input.attachment, this.limits.paperMaxMb, 'Paper PDF ') })
     }, authenticated)
     consoleService.addListener('memebot/archive/paper/edit', async (id: string, patch: Partial<IssueInput>) => { await this.ready; return this.service.updateIssue(consoleActor, id, patch, 'Y') }, authenticated)
     consoleService.addListener('memebot/archive/paper/upload', async (id: string, attachment: AttachmentInput) => {
       await this.ready
-      return this.service.replaceIssueAttachment(consoleActor, id, decodeConsoleAttachment(attachment))
+      return this.service.replaceIssueAttachment(consoleActor, id, decodeAttachmentDataUrl(attachment, this.limits.paperMaxMb, 'Paper PDF '))
     }, authenticated)
     const attachment = async (id: string) => {
       await this.ready
@@ -1362,10 +1368,10 @@ export class ArchiveConsoleFeatures {
     consoleService.addListener('memebot/archive/work/details', async (id: string) => { await this.ready; return this.service.getWorkDetails(id) }, authenticated)
     consoleService.addListener('memebot/archive/work/create', async (input: WorkInput) => {
       await this.ready
-      return this.service.publishWork(consoleActor, { ...input, attachment: input.attachment && decodeConsoleAttachment(input.attachment) })
+      return this.service.publishWork(consoleActor, { ...input, attachment: input.attachment && decodeAttachmentDataUrl(input.attachment, this.limits.workMaxMb, 'Work ZIP ') })
     }, authenticated)
     consoleService.addListener('memebot/archive/work/edit', async (id: string, patch: Partial<WorkInput>) => { await this.ready; return this.service.updateWork(consoleActor, id, patch, 'Y') }, authenticated)
-    consoleService.addListener('memebot/archive/work/upload', async (id: string, input: AttachmentInput) => { await this.ready; return this.service.replaceWorkAttachment(consoleActor, id, decodeConsoleAttachment(input)) }, authenticated)
+    consoleService.addListener('memebot/archive/work/upload', async (id: string, input: AttachmentInput) => { await this.ready; return this.service.replaceWorkAttachment(consoleActor, id, decodeAttachmentDataUrl(input, this.limits.workMaxMb, 'Work ZIP ')) }, authenticated)
     const activeWork = (id: string) => { const work = this.service.getWork(id); if (!work) throw new Error('Work 不存在或已移除'); return work }
     consoleService.addListener('memebot/archive/work/tree', async (id: string) => { await this.ready; activeWork(id); const tree = await this.service.previews.tree(id); return tree.length ? tree : this.service.rebuildWorkPreview(id) }, authenticated)
     consoleService.addListener('memebot/archive/work/preview', async (id: string, path: string) => { await this.ready; activeWork(id); return this.service.previews.preview(id, path) }, authenticated)
@@ -1376,7 +1382,7 @@ export class ArchiveConsoleFeatures {
       const data = await this.service.recover(work)
       return { filename: work.attachment.relativePath.split('/').pop(), contentType: work.attachment.contentType, data: Buffer.from(data!).toString('base64') }
     }, authenticated)
-    consoleService.addListener('memebot/archive/appearance/save', async (paperId: string, input: AppearanceInput) => { await this.ready; return this.service.associateWork(consoleActor, paperId, input.work ? { ...input, work: { ...input.work, attachment: input.work.attachment && decodeConsoleAttachment(input.work.attachment) } } : input) }, authenticated)
+    consoleService.addListener('memebot/archive/appearance/save', async (paperId: string, input: AppearanceInput) => { await this.ready; return this.service.associateWork(consoleActor, paperId, input.work ? { ...input, work: { ...input.work, attachment: input.work.attachment && decodeAttachmentDataUrl(input.work.attachment, this.limits.workMaxMb, 'Work ZIP ') } } : input) }, authenticated)
     consoleService.addListener('memebot/archive/appearance/remove', async (paperId: string, workId: string) => { await this.ready; await this.service.removeAppearance(consoleActor, paperId, workId) }, authenticated)
     consoleService.addListener('memebot/archive/restore/preview', async () => { await this.ready; return this.service.previewRestore(consoleActor) }, authenticated)
     consoleService.addListener('memebot/archive/restore/apply', async (selections?: RestoreSelection[]) => { await this.ready; return this.service.restoreFromR2(consoleActor, selections) }, authenticated)
@@ -1445,7 +1451,7 @@ export function apply(ctx: Context, config: Config) {
   const initialized = service.initialize()
   const ready = Promise.all([initialized, preflight.check()]).then(([, health]) => { if (health.state === 'unavailable') throw new Error(health.stores.local.error || '本地存储不可用') })
   void ready.catch(() => undefined)
-  new ArchiveConsoleFeatures(ctx, service, ready, preflight, queue, cleanupQueue).register()
+  new ArchiveConsoleFeatures(ctx, service, ready, preflight, queue, cleanupQueue, config).register()
   if (queue) ctx.setInterval(() => { void queue.runDue() }, 60_000)
   if (cleanupQueue) ctx.setInterval(() => { void cleanupQueue.runDue() }, 60_000)
   ctx.setInterval(() => { void service.purgeExpired() }, 60_000)
@@ -1608,13 +1614,15 @@ export function apply(ctx: Context, config: Config) {
     const denial = await archiveAccessDenial(ctx, session, 'write')
     if (denial) return denial
     await ready
-    const item = await service.publishIssue(commandSession(session), payload(metadata))
+    const input = payload(metadata) as IssueInput
+    const item = await service.publishIssue(commandSession(session), { ...input, attachment: input.attachment && decodeAttachmentDataUrl(input.attachment, config.paperMaxMb, 'Paper PDF ') })
     return `已发布 Newspaper Issue ${item.id}。`
   })
   root.subcommand('.work-publish <metadata:text>', '发布 Work').action(async ({ session }, metadata) => {
     const denial = await archiveAccessDenial(ctx, session, 'write')
     if (denial) return denial
-    const item = await service.publishWork(commandSession(session), payload(metadata))
+    const input = payload(metadata) as WorkInput
+    const item = await service.publishWork(commandSession(session), { ...input, attachment: input.attachment && decodeAttachmentDataUrl(input.attachment, config.workMaxMb, 'Work ZIP ') })
     return `已发布 Work ${item.id}。`
   })
   root.subcommand('.issue-edit <id:string> <confirmation:string> <patch:text>', '编辑 Newspaper Issue 元数据').action(async ({ session }, id, confirmation, patch) => {
