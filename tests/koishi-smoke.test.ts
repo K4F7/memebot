@@ -381,14 +381,26 @@ describe('standalone plugin command smoke behaviors', () => {
     }])
   })
 
-  it('loads FAQ and lists entries through a Mock session', async () => {
+  it('pages public FAQ entries and opens answers by stable reference', async () => {
     const harness = await createKoishiTestHarness(faqWithAccess, {
-      access: { administrators: [], managementGroups: [] }, faq: { pageSize: 10 },
+      access: { administrators: [], managementGroups: [] }, faq: { pageSize: 1 },
     })
     harnesses.push(harness)
-
+    const service = (harness.pluginResult as any).service
+    await service.create({ question: '公开问题一', answer: '公开答案一' })
+    await service.create({ question: '隐藏问题', answer: '隐藏答案', visible: false })
+    await service.create({ question: '公开问题二', answer: '公开答案二' })
     const client = await harness.client({ userId: '10003', channelId: '20001' })
-    await expect(client.receive('faq')).resolves.toEqual(['暂无公开 FAQ。'])
+    await expect(client.receive('faq')).resolves.toEqual([
+      expect.stringMatching(/FAQ（第 1\/2 页）[\s\S]*#1 公开问题一/),
+    ])
+    await expect(client.receive('faq 2')).resolves.toEqual([
+      expect.stringMatching(/FAQ（第 2\/2 页）[\s\S]*#3 公开问题二/),
+    ])
+    await expect(client.receive('faq #1')).resolves.toEqual([
+      'FAQ #1\n问题：公开问题一\n答案：公开答案一',
+    ])
+    await expect(client.receive('faq #2')).resolves.toEqual(['FAQ 编号不存在。'])
   })
 
   it('uses Access identity for FAQ reads and Access location for mutations', async () => {
@@ -403,6 +415,7 @@ describe('standalone plugin command smoke behaviors', () => {
     const denied = await harness.client({ userId: '10003', channelId: '20001', authority: 3 })
     await expect(denied.receive(`faq #${entry.id}`)).resolves.toEqual(['FAQ 编号不存在。'])
     await expect(denied.receive('faq.manage')).resolves.toEqual(['你不是管理员。'])
+    await expect(denied.receive('faq.add')).resolves.toEqual(['你不是管理员。'])
 
     const administrator = await harness.client({ userId: '10005', channelId: 'unlisted' })
     await expect(administrator.receive(`faq #${entry.id}`)).resolves.toEqual([
@@ -414,7 +427,7 @@ describe('standalone plugin command smoke behaviors', () => {
     ])
   })
 
-  it('drives the guided FAQ add flow through Mock prompts', async () => {
+  it('drives the complete guided FAQ administration route through Mock prompts', async () => {
     const harness = await createKoishiTestHarness(faqWithAccess, {
       access: { administrators: [{ qq: '10005' }], managementGroups: [{ qq: '20001' }] },
       faq: { pageSize: 10 },
@@ -435,6 +448,55 @@ describe('standalone plugin command smoke behaviors', () => {
     await expect(client.receive('faq #1')).resolves.toEqual([
       'FAQ #1\n问题：如何投稿？\n答案：使用 /submit。',
     ])
+
+    const editing = client.receive('faq.edit #1')
+    for (const input of ['两者', '怎样投稿？', '请使用 /submit。', '确认']) {
+      await new Promise<void>(resolve => setImmediate(resolve))
+      void client.receive(input)
+    }
+    await expect(editing).resolves.toEqual(expect.arrayContaining([
+      expect.stringContaining('请选择要修改的内容'),
+      expect.stringContaining('FAQ 编辑成功'),
+    ]))
+    await expect(client.receive('faq #1')).resolves.toEqual([
+      'FAQ #1\n问题：怎样投稿？\n答案：请使用 /submit。',
+    ])
+    await expect(client.receive('faq.rm #1')).resolves.toEqual(['请先隐藏 FAQ，再永久删除。'])
+
+    const hiding = client.receive('faq.hide #1')
+    await new Promise<void>(resolve => setImmediate(resolve))
+    void client.receive('确认')
+    await expect(hiding).resolves.toEqual(expect.arrayContaining(['已隐藏 FAQ #1。']))
+    const member = await harness.client({ userId: '10006', channelId: '20001' })
+    await expect(member.receive('faq #1')).resolves.toEqual(['FAQ 编号不存在。'])
+    await expect(client.receive('faq.manage')).resolves.toEqual(['1. [隐藏] 怎样投稿？'])
+
+    const showing = client.receive('faq.show #1')
+    await new Promise<void>(resolve => setImmediate(resolve))
+    void client.receive('确认')
+    await expect(showing).resolves.toEqual(expect.arrayContaining(['已公开 FAQ #1。']))
+    await expect(member.receive('faq #1')).resolves.toEqual([
+      'FAQ #1\n问题：怎样投稿？\n答案：请使用 /submit。',
+    ])
+
+    const hidingAgain = client.receive('faq.hide #1')
+    await new Promise<void>(resolve => setImmediate(resolve))
+    void client.receive('确认')
+    await expect(hidingAgain).resolves.toEqual(expect.arrayContaining(['已隐藏 FAQ #1。']))
+    const cancelledRemoval = client.receive('faq.rm #1')
+    await new Promise<void>(resolve => setImmediate(resolve))
+    void client.receive('取消')
+    await expect(cancelledRemoval).resolves.toEqual(expect.arrayContaining(['已取消永久删除。']))
+    await expect(client.receive('faq #1')).resolves.toEqual([
+      'FAQ #1\n问题：怎样投稿？\n答案：请使用 /submit。',
+    ])
+
+    const removal = client.receive('faq.rm #1')
+    await new Promise<void>(resolve => setImmediate(resolve))
+    void client.receive('确认')
+    await expect(removal).resolves.toEqual(expect.arrayContaining(['已永久删除 FAQ #1。']))
+    await expect(client.receive('faq #1')).resolves.toEqual(['FAQ 编号不存在。'])
+    await expect(client.receive('faq.manage')).resolves.toEqual(['暂无 FAQ。'])
   })
 
   it('loads intake and invokes an administrator command through a Mock session', async () => {
