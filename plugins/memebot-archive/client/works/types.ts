@@ -34,6 +34,13 @@ export interface WorkDetails {
   papers: WorkPaper[]
 }
 
+export interface AppearanceFormValue {
+  paperId: string
+  page: string
+  section: string
+  displayOrder: number
+}
+
 export interface WorkFormValue {
   title: string
   author: string

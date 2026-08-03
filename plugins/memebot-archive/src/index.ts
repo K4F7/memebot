@@ -973,20 +973,21 @@ export class ArchiveService {
       paperId: paper.id, workId: work.id, page: input.page?.trim() || undefined, section: input.section?.trim() || undefined,
       displayOrder, createdAt: existing?.createdAt ?? now, updatedAt: now,
     }
+    if (this.metadata) await this.metadata.upsertAppearance(appearance)
     if (existing) Object.assign(existing, appearance)
     else this.db.appearances.push(appearance)
-    if (this.metadata) await this.metadata.upsertAppearance(appearance)
     if (paper.attachment && this.backupQueue) await this.enqueueBackup('paper', paper)
     if (work.attachment && this.backupQueue) await this.enqueueBackup('work', work)
     return appearance
   }
 
   async removeAppearance(session: ArchiveSession, paperId: string, workId: string) {
-    const index = this.db.appearances.findIndex(item => item.paperId === paperId && item.workId === workId)
-    if (index < 0) throw new Error('Publication Appearance not found')
-    this.db.appearances.splice(index, 1)
-    if (this.metadata) await this.metadata.removeAppearance(paperId, workId)
     const paper = this.getIssue(paperId); const work = this.getWork(workId)
+    if (!paper || !work) throw new Error('Publication Appearance not found')
+    const index = this.db.appearances.findIndex(item => item.paperId === paper.id && item.workId === work.id)
+    if (index < 0) throw new Error('Publication Appearance not found')
+    if (this.metadata) await this.metadata.removeAppearance(paper.id, work.id)
+    this.db.appearances.splice(index, 1)
     if (paper?.attachment && this.backupQueue) await this.enqueueBackup('paper', paper)
     if (work?.attachment && this.backupQueue) await this.enqueueBackup('work', work)
   }

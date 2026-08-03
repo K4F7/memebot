@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { message, router, send } from '@koishijs/client'
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { message, messageBox, router, send } from '@koishijs/client'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
+import type { NewspaperIssue } from '../issues/types'
+import AppearanceFormDialog from '../works/AppearanceFormDialog.vue'
 import WorkFormDialog from '../works/WorkFormDialog.vue'
 import WorkPreviewDialog from '../works/WorkPreviewDialog.vue'
 import { LatestRequest, normalizeWorksRoute, paginateWorks, toWorksQuery, type WorkPageSize } from '../works/state'
-import type { ConsoleAttachment, DownloadResult, Work, WorkDetails, WorkFormValue } from '../works/types'
+import type { AppearanceFormValue, ConsoleAttachment, DownloadResult, Work, WorkDetails, WorkFormValue, WorkPaper } from '../works/types'
 
 const works = ref<Work[]>([])
 const loading = ref(false)
@@ -17,14 +19,28 @@ const searchInput = ref('')
 const formVisible = ref(false)
 const formMode = ref<'create' | 'edit'>('create')
 const previewVisible = ref(false)
+const appearanceVisible = ref(false)
+const appearance = ref<WorkPaper>()
+const appearanceWork = ref<Work>()
+const appearancePaperIds = ref<string[]>([])
+const papers = ref<NewspaperIssue[]>([])
+const papersLoading = ref(false)
+const appearanceAction = ref('')
+const focusAnchor = ref<HTMLElement>()
 const listRequests = new LatestRequest()
 const detailRequests = new LatestRequest()
 let debounceTimer: ReturnType<typeof setTimeout> | undefined
+let returnFocus: HTMLElement | null = null
+let appearanceRequest = 0
+let workSelection = 0
 
 const routeState = computed(() => normalizeWorksRoute(router.currentRoute.value.query))
 const selectedWork = computed(() => works.value.find(work => work.id === routeState.value.selected) ?? details.value?.work)
 const visibleWorks = computed(() => paginateWorks(works.value, routeState.value.page, routeState.value.pageSize))
 const maxPage = computed(() => Math.max(1, Math.ceil(works.value.length / routeState.value.pageSize)))
+const selectablePapers = computed(() => appearance.value
+  ? papers.value
+  : papers.value.filter(paper => !appearancePaperIds.value.includes(paper.id)))
 
 function replaceRoute(patch: Partial<ReturnType<typeof normalizeWorksRoute>>) {
   const next = { ...routeState.value, ...patch }
@@ -47,7 +63,10 @@ watch(searchInput, (value) => {
 })
 
 watch(() => routeState.value.search, loadWorks, { immediate: true })
-watch(() => routeState.value.selected, loadDetails, { immediate: true })
+watch(() => routeState.value.selected, () => {
+  workSelection += 1
+  void loadDetails()
+}, { immediate: true })
 watch([() => works.value.length, () => routeState.value.pageSize], () => {
   if (routeState.value.page > maxPage.value) replaceRoute({ page: maxPage.value })
 })
@@ -101,6 +120,104 @@ function openEdit() {
   if (!selectedWork.value) return
   formMode.value = 'edit'
   formVisible.value = true
+}
+
+function rememberFocus() {
+  returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+}
+
+async function loadPapers(request: number) {
+  papersLoading.value = true
+  try {
+    const result = await send('memebot/archive/papers') as NewspaperIssue[]
+    if (request !== appearanceRequest) return false
+    papers.value = result
+    return true
+  } catch (cause) {
+    if (request !== appearanceRequest) return false
+    const reason = cause instanceof Error ? cause.message : String(cause)
+    message.error(`Newspaper Issues 加载失败：${reason}`)
+    throw cause
+  } finally {
+    if (request === appearanceRequest) papersLoading.value = false
+  }
+}
+
+async function openAppearance(item?: WorkPaper) {
+  const work = details.value?.work
+  if (!work) return
+  rememberFocus()
+  const request = ++appearanceRequest
+  const selection = workSelection
+  appearanceWork.value = work
+  appearancePaperIds.value = details.value?.papers.map(entry => entry.paper.id) ?? []
+  appearance.value = item
+  try {
+    if (await loadPapers(request) && selection === workSelection) appearanceVisible.value = true
+    else if (request === appearanceRequest) restoreAppearanceFocus()
+  } catch {
+    restoreAppearanceFocus()
+  }
+}
+
+function restoreAppearanceFocus() {
+  appearanceRequest += 1
+  papersLoading.value = false
+  appearance.value = undefined
+  appearanceWork.value = undefined
+  appearancePaperIds.value = []
+  void nextTick(() => {
+    const target = returnFocus?.isConnected ? returnFocus : focusAnchor.value
+    target?.focus()
+  })
+}
+
+async function saveAppearance(value: AppearanceFormValue) {
+  const work = appearanceWork.value
+  if (!work) throw new Error('请选择要管理刊载信息的 Work。')
+  try {
+    await send('memebot/archive/appearance/save', value.paperId, {
+      workId: work.id,
+      page: value.page || undefined,
+      section: value.section || undefined,
+      displayOrder: value.displayOrder,
+    })
+    message.success(`已保存 ${work.id} 与 ${value.paperId} 的 Publication Appearance。`)
+    appearanceAction.value = 'Publication Appearance 已保存。'
+    await Promise.all([loadWorks(), loadDetails()])
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause)
+    message.error(`Publication Appearance 保存失败：${reason}`)
+    throw cause
+  }
+}
+
+async function removeAppearance(item: WorkPaper) {
+  const work = details.value?.work
+  if (!work) return
+  rememberFocus()
+  try {
+    await messageBox.confirm(
+      `将解除 ${work.id} 与 ${item.paper.id} 的 Publication Appearance；两个 Archive Identifier 都会保留。`,
+      '解除刊载关联？',
+      { confirmButtonText: '解除关联', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    restoreAppearanceFocus()
+    return
+  }
+  try {
+    await send('memebot/archive/appearance/remove', item.paper.id, work.id)
+    message.success(`已解除 ${work.id} 与 ${item.paper.id} 的 Publication Appearance。`)
+    appearanceAction.value = 'Publication Appearance 已解除。'
+    await Promise.all([loadWorks(), loadDetails()])
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause)
+    message.error(`Publication Appearance 解除失败：${reason}`)
+    appearanceAction.value = `Publication Appearance 解除失败：${reason}`
+  } finally {
+    restoreAppearanceFocus()
+  }
 }
 
 function fileAttachment(file: File) {
@@ -258,7 +375,7 @@ function changePageSize(value: number) {
       <template v-else-if="details">
         <div class="details-heading">
           <div>
-            <h3>{{ details.work.id }} · {{ details.work.title }}</h3>
+            <h3 ref="focusAnchor" tabindex="-1">{{ details.work.id }} · {{ details.work.title }}</h3>
             <p>{{ details.work.author }}</p>
           </div>
           <div class="details-actions">
@@ -274,13 +391,24 @@ function changePageSize(value: number) {
           <el-descriptions-item label="备份状态">{{ details.work.backupState ?? 'disabled' }}</el-descriptions-item>
           <el-descriptions-item label="校验和">{{ details.work.attachment?.checksum ?? '无' }}</el-descriptions-item>
         </el-descriptions>
-        <h4>刊载于</h4>
+        <div class="appearance-heading">
+          <h4>刊载于</h4>
+          <el-button type="primary" :loading="papersLoading" @click="openAppearance()">添加刊载关联</el-button>
+        </div>
+        <p class="sr-status" aria-live="polite">{{ appearanceAction }}</p>
         <el-empty v-if="!details.papers.length" description="尚无 Publication Appearance" />
         <ul v-else class="appearance-list">
           <li v-for="item in details.papers" :key="item.paper.id">
-            {{ item.paper.id }} · {{ item.paper.month }} · {{ item.paper.title }}
-            <span v-if="item.page"> · 第 {{ item.page }} 页</span>
-            <span v-if="item.section"> · {{ item.section }}</span>
+            <span>
+              {{ item.paper.id }} · {{ item.paper.month }} · {{ item.paper.title }}
+              <span v-if="item.page"> · 第 {{ item.page }} 页</span>
+              <span v-if="item.section"> · {{ item.section }}</span>
+              · 顺序 {{ item.displayOrder }}
+            </span>
+            <span class="appearance-actions">
+              <el-button link type="primary" @click="openAppearance(item)">编辑</el-button>
+              <el-button link type="danger" @click="removeAppearance(item)">解除关联</el-button>
+            </span>
           </li>
         </ul>
       </template>
@@ -297,6 +425,14 @@ function changePageSize(value: number) {
       :work="selectedWork"
       :download-package="downloadPackage"
     />
+    <AppearanceFormDialog
+      v-model="appearanceVisible"
+      :work="appearanceWork"
+      :papers="selectablePapers"
+      :appearance="appearance"
+      :submit="saveAppearance"
+      @closed="restoreAppearanceFocus"
+    />
   </section>
 </template>
 
@@ -304,6 +440,7 @@ function changePageSize(value: number) {
 .works-heading,
 .details-heading,
 .details-actions,
+.appearance-heading,
 .works-search {
   display: flex;
   align-items: center;
@@ -370,7 +507,37 @@ function changePageSize(value: number) {
 }
 
 .appearance-list {
+  padding: 0;
   line-height: 1.8;
+  list-style: none;
+}
+
+.appearance-list li,
+.appearance-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.appearance-heading {
+  margin-top: 20px;
+}
+
+.appearance-heading h4 {
+  margin: 0;
+}
+
+.sr-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 @media (max-width: 720px) {
@@ -392,6 +559,11 @@ function changePageSize(value: number) {
 
   .works-search :deep(.el-input) {
     max-width: none;
+  }
+
+  .appearance-list li {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .works-pagination {

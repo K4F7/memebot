@@ -48,6 +48,7 @@ describe('Archive Works Console components', () => {
     const files = await Promise.all([
       'regions/WorksRegion.vue',
       'works/WorkFormDialog.vue',
+      'works/AppearanceFormDialog.vue',
       'works/WorkPreviewDialog.vue',
     ].map(path => readFile(join(root, path), 'utf8')))
     const source = files.join('\n')
@@ -58,6 +59,14 @@ describe('Archive Works Console components', () => {
     expect(source).toContain('<el-dialog')
     expect(source).toContain('fullscreen')
     expect(source).toContain('messageBox.confirm')
+    expect(source).toContain("memebot/archive/appearance/save")
+    expect(source).toContain("memebot/archive/appearance/remove")
+    expect(source).toContain('aria-live="assertive"')
+    expect(source).toContain(':loading="submitting"')
+    expect(source).toContain('formError.value = cause instanceof Error')
+    expect(source).toContain('const work = appearanceWork.value')
+    expect(source).toContain('request !== appearanceRequest')
+    expect(source).toContain('selection === workSelection')
     expect(source).toContain('sandbox="allow-downloads"')
     expect(source).not.toMatch(/\bwindow\.(?:alert|confirm|prompt)\s*\(/)
     expect(source).not.toMatch(/\bstyle\s*=/)
