@@ -6,7 +6,7 @@ describe('Archive lifecycle Console', () => {
   it('renders every lifecycle surface and keeps destructive actions themed and accessible', async () => {
     const root = join(__dirname, '../client')
     const sources = await Promise.all([
-      'regions/LifecycleAuditRegion.vue',
+      'regions/OpsRegion.vue',
       'lifecycle/LifecycleActionDialog.vue',
     ].map(path => readFile(join(root, path), 'utf8')))
     const source = sources.join('\n')

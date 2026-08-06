@@ -1,8 +1,7 @@
 export const archiveTabs = [
-  { id: 'issues', label: 'Newspaper Issues' },
-  { id: 'works', label: 'Works' },
-  { id: 'storage', label: '存储与恢复' },
-  { id: 'lifecycle', label: '生命周期审计' },
+  { id: 'issues', label: '报纸期数' },
+  { id: 'works', label: '收录作品' },
+  { id: 'ops', label: '运维' },
 ] as const
 
 export type ArchiveTab = typeof archiveTabs[number]['id']

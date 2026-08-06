@@ -202,7 +202,7 @@ function changePageSize(value: number) {
   <section aria-labelledby="issues-heading">
     <div class="issues-heading">
       <div>
-        <h2 id="issues-heading" ref="focusAnchor" tabindex="-1">Newspaper Issues</h2>
+        <h2 id="issues-heading" ref="focusAnchor" tabindex="-1">报纸期数</h2>
         <p>查找、创建、维护并明确预览或下载每期报纸的权威 PDF。</p>
       </div>
       <el-button type="primary" @click="openCreate">创建 Newspaper Issue</el-button>

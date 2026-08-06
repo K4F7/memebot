@@ -46,6 +46,31 @@ A ticket agent must never:
 
 Fetches and read-only inspection of repository state are allowed from the shared checkout. All ticket writes, generated files, dependency installs, tests, and commits belong in the dedicated issue worktree.
 
+## Live browser verification inside the worktree
+
+A ticket worktree may host its own `app/` Koishi instance to run live browser
+acceptance without touching the shared `main` checkout. The repository's
+`.gitignore` ignores `app/`, so none of these files enter the issue branch.
+
+From the worktree root, follow the local-instance setup documented in the root
+`README.md`, but inside the worktree's own `app/`:
+
+1. `yarn build` first so the `file:` dependencies snapshot current plugin output.
+2. Create `app/package.json` depending on `file:../plugins/memebot-*` (with the
+   `koishi-plugin-memebot-access` resolution), and an empty `app/yarn.lock`.
+3. Configure `app/koishi.yml` with Server, Console, Database, Sandbox, and the
+   plugins under test.
+4. `cd app && yarn install`, then `yarn start` in a separate terminal.
+5. Run the live suites from the worktree root, for example:
+
+   ```powershell
+   $env:MEMEBOT_ARCHIVE_WEBUI_URL = 'http://127.0.0.1:5140'
+   yarn workspace koishi-plugin-memebot-archive test:browser:required
+   ```
+
+Stop the instance and delete the worktree `app/` before cleanup; it is never
+committed or pushed. The shared `main` checkout's own `app/` stays untouched.
+
 ## Handoff
 
 Commit the complete ticket change and push the issue branch before handoff. The following checks must all succeed, and `git status --short` must produce no output:

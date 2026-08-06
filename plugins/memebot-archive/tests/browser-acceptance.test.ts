@@ -22,7 +22,10 @@ describe('Archive browser acceptance contract', () => {
   it('keeps every declared real-browser capability explicit in the suite', async () => {
     const source = await readFile(join(root, 'e2e/archive-console.pw.ts'), 'utf8')
     for (const capability of [
-      '存储、备份与 R2 恢复',
+      '备份与恢复',
+      '生命周期审计',
+      '报纸期数',
+      '收录作品',
       '创建 Newspaper Issue',
       '创建 Work',
       '安全派生预览',

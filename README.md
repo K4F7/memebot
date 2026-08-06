@@ -100,8 +100,8 @@ QQ 联系提交者，Bot 不承载管理员与提交者之间的回复会话。
 ## Archive
 
 Archive 必须同时获得 Koishi Database 和 Console 服务。领域词汇 **Newspaper Issue**
-在现有 QQ 命令和 Archive WebUI 中显示为 **Paper**；下文使用 Paper 时均指同一概念。
-主要配置：
+在 QQ 命令中显示为 **Paper**，在 Archive WebUI 中显示为 **报纸期数**；下文使用
+Paper 时均指同一概念。主要配置：
 
 - `localPath`：主附件目录，默认 `data/memebot-archive`。
 - `paperMaxMb`、`workMaxMb`：Paper PDF 和 Work ZIP 上限，默认 100 MB、500 MB。
@@ -131,6 +131,8 @@ Paper 使用 `P<自然数>`，Work 使用 `W<自然数>`；Archive Identifier �
 
 Koishi Console 中的 Archive WebUI 是完整管理入口，覆盖：
 
+- Archive WebUI 使用三个页签：**报纸期数**、**收录作品** 与 **运维**；运维页签内
+  分为 **备份与恢复**、**生命周期审计** 两个分区。
 - 本地与 R2 预检状态、重新预检、备份队列状态和立即重试。
 - Paper/Work 的搜索、新建、编辑、附件替换、预览和下载。
 - Work Package 文件树与完整预览；HTML、SVG 等 Web 内容仅作为派生数据在受限

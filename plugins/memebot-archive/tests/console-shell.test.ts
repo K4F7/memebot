@@ -15,17 +15,16 @@ async function clientSources(directory = clientRoot): Promise<string[]> {
 }
 
 describe('Archive Console shell', () => {
-  it('defines the four navigable shell tabs and normalizes URL state', () => {
+  it('defines the three navigable shell tabs and normalizes URL state', () => {
     expect(archiveTabs.map(tab => [tab.id, tab.label])).toEqual([
-      ['issues', 'Newspaper Issues'],
-      ['works', 'Works'],
-      ['storage', '存储与恢复'],
-      ['lifecycle', '生命周期审计'],
+      ['issues', '报纸期数'],
+      ['works', '收录作品'],
+      ['ops', '运维'],
     ])
     expect(normalizeArchiveTab('works')).toBe('works')
-    expect(normalizeArchiveTab(['storage'])).toBe('storage')
+    expect(normalizeArchiveTab(['ops'])).toBe('ops')
     expect(normalizeArchiveTab('unknown')).toBe('issues')
-    expect(toArchiveTabQuery('lifecycle')).toEqual({ tab: 'lifecycle' })
+    expect(toArchiveTabQuery('ops')).toEqual({ tab: 'ops' })
   })
 
   it('uses SFC regions without inline styles or browser-native dialogs', async () => {
