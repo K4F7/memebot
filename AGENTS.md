@@ -51,7 +51,7 @@ Issues and PRDs are tracked in GitHub Issues for `K4F7/memebot`. See `docs/agent
 
 ### Agent ticket delivery
 
-Implement every agent-grabbable ticket in its own branch and dedicated worktree. Do not edit the shared `main` checkout. Commit and push the complete issue branch before handoff. See `docs/agents/agent-delivery.md` for creation, remote verification, handoff, integration, and cleanup.
+Implement every agent-grabbable ticket in its own issue branch created from the latest `origin/main`. Commit and push the complete issue branch before handoff. See `docs/agents/agent-delivery.md` for creation, remote verification, handoff, integration, and cleanup.
 
 ### Triage labels
 

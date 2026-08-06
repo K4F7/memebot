@@ -37,4 +37,4 @@ When a skill says "fetch the relevant ticket", run `gh issue view <number> --com
 
 ## Agent ticket execution
 
-Before implementing an agent-grabbable ticket, follow the isolated worktree contract in `docs/agents/agent-delivery.md`. A handoff is ready only after the complete issue branch is committed, pushed to `origin`, and verified at its handed-off head SHA. `Blocked by` describes integration readiness: a dependent ticket remains blocked until every listed blocker has landed in `main` and the integrated result has passed verification. Work completed only in a local worktree or on another issue branch does not satisfy a blocker.
+Before implementing an agent-grabbable ticket, follow the delivery contract in `docs/agents/agent-delivery.md`. A handoff is ready only after the complete issue branch is committed, pushed to `origin`, and verified at its handed-off head SHA. `Blocked by` describes integration readiness: a dependent ticket remains blocked until every listed blocker has landed in `main` and the integrated result has passed verification. Work completed only on a local or unpushed issue branch does not satisfy a blocker.
