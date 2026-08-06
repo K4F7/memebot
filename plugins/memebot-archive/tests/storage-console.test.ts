@@ -49,7 +49,7 @@ describe('Archive storage and recovery Console component', () => {
       'memebot/archive/restore/history',
     ]) expect(source).toContain(`'${event}'`)
     expect(source).toContain('<el-table')
-    expect(source).toContain('class="storage-card"')
+    expect(source).toContain('<k-card')
     expect(source).toContain('<el-radio-group')
     expect(source).toContain('messageBox.confirm')
     expect(source).toContain('aria-live="polite"')

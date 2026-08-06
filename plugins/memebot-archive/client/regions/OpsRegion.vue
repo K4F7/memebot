@@ -375,13 +375,13 @@ function auditDetails(entry: RestoreAuditEntry) {
             </el-table>
           </div>
           <div class="mobile-storage" aria-label="等待或失败的 Archive Backup 卡片">
-            <article v-for="job in activeBackupJobs" :key="job.id" class="storage-card">
+            <k-card v-for="job in activeBackupJobs" :key="job.id">
               <strong>{{ job.recordId }} · {{ job.recordKind === 'paper' ? 'Paper' : 'Work' }}</strong>
               <span>状态：{{ backupStateLabel(job.state) }} · 已尝试 {{ job.attempts }} 次</span>
               <span>下次自动重试：{{ formatDate(job.nextAttemptAt) }}</span>
               <p>诊断：{{ job.error || '等待执行' }}</p>
               <el-button :loading="retryingRecord === job.recordId" @click="retryBackup(job)">立即重试</el-button>
-            </article>
+            </k-card>
           </div>
         </template>
       </k-card>
@@ -413,11 +413,11 @@ function auditDetails(entry: RestoreAuditEntry) {
                 </el-table>
               </div>
               <div class="mobile-storage" aria-label="R2 恢复差异卡片">
-                <article v-for="entry in preview.entries" :key="recoveryKey(entry)" class="storage-card">
+                <k-card v-for="entry in preview.entries" :key="recoveryKey(entry)">
                   <strong>{{ entry.recordId }} · {{ recordLabel(entry) }}</strong>
                   <el-tag :type="recoveryStatusType(entry)">{{ recoveryStatusLabel(entry) }}</el-tag>
                   <el-radio-group v-model="decisions[recoveryKey(entry)]" :aria-label="`${entry.recordId} 恢复处理方式`"><el-radio value="local">保留本地</el-radio><el-radio value="r2">使用 R2</el-radio></el-radio-group>
-                </article>
+                </k-card>
               </div>
               <div class="apply-actions">
                 <span>{{ conflictKeys.length ? '解决全部冲突后才能应用。' : '所有选择已明确；应用结果会写入恢复历史。' }}</span>
@@ -441,11 +441,11 @@ function auditDetails(entry: RestoreAuditEntry) {
             </el-table>
           </div>
           <div class="mobile-storage" aria-label="R2 恢复审计历史卡片">
-            <article v-for="entry in restoreHistory" :key="entry.id" class="storage-card">
+            <k-card v-for="entry in restoreHistory" :key="entry.id">
               <strong>{{ entry.action === 'preview' ? '恢复预览' : '应用恢复' }} · {{ entry.result === 'complete' ? '完成' : '失败' }}</strong>
               <span>{{ formatDate(entry.createdAt) }} · {{ entry.actor }}</span>
               <p>{{ auditDetails(entry) }}</p>
-            </article>
+            </k-card>
           </div>
         </template>
       </k-card>
@@ -503,7 +503,7 @@ function auditDetails(entry: RestoreAuditEntry) {
           </el-table>
         </div>
         <div class="mobile-lifecycle">
-          <article v-for="item in removed" :key="item.id" class="lifecycle-card">
+          <k-card v-for="item in removed" :key="item.id">
             <strong>{{ item.id }} · {{ item.title }}</strong>
             <span>{{ item.kind === 'paper' ? 'Paper' : 'Work' }} · {{ item.lifecycle }}</span>
             <small>移除：{{ formatDate(item.removedAt) }}</small>
@@ -513,7 +513,7 @@ function auditDetails(entry: RestoreAuditEntry) {
               <el-button v-if="item.lifecycle === 'removed'" type="danger" @click="openAction('purge', { id: item.id, label: item.title })">永久清理</el-button>
               <el-button type="danger" plain @click="openAction('anonymize', { id: item.id, label: item.title })">匿名化</el-button>
             </div>
-          </article>
+          </k-card>
         </div>
         </template>
       </k-card>
@@ -531,11 +531,11 @@ function auditDetails(entry: RestoreAuditEntry) {
           </el-table>
         </div>
         <div class="mobile-lifecycle">
-          <article v-for="item in retired" :key="item.id" class="lifecycle-card">
+          <k-card v-for="item in retired" :key="item.id">
             <strong>{{ item.recordId }} · {{ item.attachment.relativePath }}</strong>
             <small>{{ formatBytes(item.attachment.size) }} · 恢复期限 {{ formatDate(item.expiresAt) }}</small>
             <el-button @click="openAction('restoreAttachment', { id: item.id, label: `${item.recordId} · ${item.attachment.relativePath}` })">恢复版本</el-button>
-          </article>
+          </k-card>
         </div>
         </template>
       </k-card>
@@ -554,12 +554,12 @@ function auditDetails(entry: RestoreAuditEntry) {
           </el-table>
         </div>
         <div class="mobile-lifecycle">
-          <article v-for="job in activeCleanupJobs" :key="job.id" class="lifecycle-card">
+          <k-card v-for="job in activeCleanupJobs" :key="job.id">
             <strong>{{ job.recordId }} · {{ job.state }}</strong>
             <span>{{ job.error || '等待远端删除' }}</span>
             <small>{{ job.objectKeys.join('、') }}</small>
             <el-button @click="retryCleanup(job)">立即重试</el-button>
-          </article>
+          </k-card>
         </div>
       </k-card>
 
@@ -574,11 +574,11 @@ function auditDetails(entry: RestoreAuditEntry) {
           </el-table>
         </div>
         <div class="mobile-lifecycle" aria-label="生命周期历史卡片">
-          <article v-for="entry in lifecycleHistory" :key="entry.id" class="lifecycle-card">
+          <k-card v-for="entry in lifecycleHistory" :key="entry.id">
             <strong>{{ entry.recordId }} · {{ actionLabel(entry.action) }}</strong>
             <span>{{ formatDate(entry.createdAt) }} · {{ entry.actor }}</span>
             <small>{{ entry.details || '—' }}</small>
-          </article>
+          </k-card>
           <el-empty v-if="!lifecycleHistory.length" description="尚无生命周期历史" />
         </div>
       </k-card>
@@ -660,19 +660,16 @@ function auditDetails(entry: RestoreAuditEntry) {
   display: none;
 }
 
-.storage-card,
-.lifecycle-card {
+.mobile-storage :deep(.k-card-body),
+.mobile-lifecycle :deep(.k-card-body) {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 14px;
   overflow-wrap: anywhere;
-  border: 1px solid var(--k-color-divider);
-  border-radius: 8px;
 }
 
-.storage-card p,
-.lifecycle-card small {
+.mobile-storage :deep(.k-card-body p),
+.mobile-lifecycle :deep(.k-card-body small) {
   margin: 0;
   color: var(--fg2);
   overflow-wrap: anywhere;

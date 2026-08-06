@@ -15,7 +15,7 @@ describe('Archive lifecycle Console', () => {
       expect(source).toContain(text)
     }
     expect(source).toContain('<el-table')
-    expect(source).toContain('class="lifecycle-card"')
+    expect(source).toContain('<k-card')
     expect(source).toContain('aria-label="生命周期历史卡片"')
     expect(source).toContain('<el-empty v-if="!removed.length"')
     expect(source).toContain('<el-empty v-if="!retired.length"')
