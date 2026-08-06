@@ -10,12 +10,11 @@ describe('agent ticket delivery contract', () => {
     expect(agents).toContain('docs/agents/agent-delivery.md')
   })
 
-  it('defines the isolated worktree lifecycle and handoff evidence', () => {
-    expect(contract).toMatch(/one issue, one branch, and one dedicated worktree/i)
+  it('defines the issue-branch delivery lifecycle and handoff evidence', () => {
+    expect(contract).toMatch(/its own issue branch/i)
     expect(contract).toMatch(/latest `origin\/main`/i)
     expect(contract).toMatch(/blockers?.+integrated.+verified/is)
-    expect(contract).toMatch(/never.+shared `main` checkout/is)
-    expect(contract).toMatch(/never.+reuse.+worktree/is)
+    expect(contract).toMatch(/never.+reuse.+branch/is)
     expect(contract).toMatch(/never.+merge.+sibling/is)
 
     for (const field of [

@@ -7,6 +7,6 @@ export default defineConfig({
     alias: [{ find: /^koishi$/, replacement: '@koishijs/core' }],
   },
   test: {
-    exclude: [...configDefaults.exclude, '**/.worktree/**'],
+    exclude: configDefaults.exclude,
   },
 })

@@ -5,7 +5,6 @@ data
 temp
 issue*.json
 /app/
-.worktree/
 
 .env
 .env.*
