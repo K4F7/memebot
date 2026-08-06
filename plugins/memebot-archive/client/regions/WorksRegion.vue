@@ -311,7 +311,7 @@ function changePageSize(value: number) {
   <section aria-labelledby="works-heading">
     <div class="works-heading">
       <div>
-        <h2 id="works-heading">Works</h2>
+        <h2 id="works-heading">收录作品</h2>
         <p>查找、维护并安全浏览 ZIP Work Package；原始 ZIP 始终是唯一权威附件。</p>
       </div>
       <el-button type="primary" @click="openCreate">创建 Work</el-button>

@@ -67,19 +67,19 @@ test.describe('Archive Console real-browser acceptance', () => {
     const workPackage = testInfo.outputPath('browser-work.zip')
     await writeFile(workPackage, zipEntry('README.txt', 'Archive browser acceptance preview.'))
 
-    await page.goto('/memebot/archive?tab=storage')
-    await expect(page.getByRole('heading', { name: '存储、备份与 R2 恢复' })).toBeVisible()
+    await page.goto('/memebot/archive?tab=ops')
+    await expect(page.getByRole('heading', { name: '运维' })).toBeVisible()
     await expect(page.getByText('可读写，诊断校验通过')).toBeVisible()
     await expect(page.getByText('未启用；远端备份与恢复不可用')).toBeVisible()
 
-    await openArchiveTab(page, 'Newspaper Issues')
+    await openArchiveTab(page, '报纸期数')
     await expect.poll(() => new URL(page.url()).searchParams.get('tab')).toBe('issues')
     await page.goBack()
-    await expect(page.getByRole('tab', { name: '存储与恢复' })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByRole('tab', { name: '运维' })).toHaveAttribute('aria-selected', 'true')
     await page.goForward()
-    await expect(page.getByRole('tab', { name: 'Newspaper Issues' })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByRole('tab', { name: '报纸期数' })).toHaveAttribute('aria-selected', 'true')
     await page.reload()
-    await expect(page.getByRole('heading', { name: 'Newspaper Issues' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: '报纸期数' })).toBeVisible()
 
     const createPaper = page.getByRole('button', { name: '创建 Newspaper Issue' })
     await createPaper.focus()
@@ -106,7 +106,7 @@ test.describe('Archive Console real-browser acceptance', () => {
     await page.keyboard.press('Escape')
     await expect(previewPaper).toBeFocused()
 
-    await openArchiveTab(page, 'Works')
+    await openArchiveTab(page, '收录作品')
     const createWork = page.getByRole('button', { name: '创建 Work' })
     await createWork.focus()
     await page.keyboard.press('Enter')
@@ -157,7 +157,7 @@ test.describe('Archive Console real-browser acceptance', () => {
     await expect(appearanceDialog).toBeHidden()
     await expect(page.locator('.appearance-list li').filter({ hasText: paperTitle })).toContainText('第 7 页')
 
-    await openArchiveTab(page, '生命周期审计')
+    await openArchiveTab(page, '运维')
     const removeInput = page.getByRole('textbox', { name: '要移除的 Archive Identifier' })
     await removeInput.fill(workId)
     await removeInput.press('Enter')
@@ -176,7 +176,7 @@ test.describe('Archive Console real-browser acceptance', () => {
     await restoreDialog.getByRole('button', { name: '确认恢复 Archive Item' }).click()
     await expect(restoreDialog).toBeHidden()
 
-    await openArchiveTab(page, 'Works')
+    await openArchiveTab(page, '收录作品')
     const restoredRow = page.getByRole('row').filter({ hasText: workTitle })
     await expect(restoredRow).toContainText(workId)
     await restoredRow.getByRole('button', { name: '查看详情' }).click()
@@ -199,15 +199,13 @@ test.describe('Archive Console real-browser acceptance', () => {
     await expect(page.locator('.mobile-results').filter({ hasText: paperTitle })).toBeVisible()
     await expectNoHorizontalScroll(page)
 
-    await openArchiveTab(page, 'Works')
+    await openArchiveTab(page, '收录作品')
     await expect(page.locator('.mobile-results').filter({ hasText: workTitle })).toBeVisible()
     await expectNoHorizontalScroll(page)
 
-    await openArchiveTab(page, '存储与恢复')
-    await expect(page.getByRole('heading', { name: '存储、备份与 R2 恢复' })).toBeVisible()
-    await expectNoHorizontalScroll(page)
-
-    await openArchiveTab(page, '生命周期审计')
+    await openArchiveTab(page, '运维')
+    await expect(page.getByRole('heading', { name: '备份与恢复' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: '生命周期审计' })).toBeVisible()
     await expect(page.locator('[aria-label="生命周期历史卡片"]')).toBeVisible()
     await expect(page.locator('[aria-label="生命周期历史卡片"] .lifecycle-card').first()).toBeVisible()
     await expectNoHorizontalScroll(page)
@@ -216,7 +214,7 @@ test.describe('Archive Console real-browser acceptance', () => {
     await page.setViewportSize({ width: 390, height: 844 })
     await expect(page.locator('[aria-label="生命周期历史卡片"] .lifecycle-card').first()).toBeVisible()
     await expectNoHorizontalScroll(page)
-    await openArchiveTab(page, 'Newspaper Issues')
+    await openArchiveTab(page, '报纸期数')
     await expect(page.locator('.mobile-results').filter({ hasText: paperTitle })).toBeVisible()
     await expectNoHorizontalScroll(page)
     await page.screenshot({ path: testInfo.outputPath('archive-mobile-390.png'), fullPage: true })
@@ -265,7 +263,7 @@ test.describe('Archive Console real-browser acceptance', () => {
 
   test('retries an Archive Backup when an R2 failure fixture is available', async ({ page }) => {
     test.skip(!backupRetryAvailable, 'NOT EXECUTED: no failed R2 Archive Backup fixture is available.')
-    await page.goto('/memebot/archive?tab=storage')
+    await page.goto('/memebot/archive?tab=ops')
     const retry = page.getByRole('button', { name: '立即重试' }).first()
     await expect(retry).toBeVisible()
     await retry.click()
@@ -274,7 +272,7 @@ test.describe('Archive Console real-browser acceptance', () => {
 
   test('generates the R2 recovery preview when R2 manifests are available', async ({ page }) => {
     test.skip(!r2RecoveryAvailable, 'NOT EXECUTED: no R2 recovery manifests are available.')
-    await page.goto('/memebot/archive?tab=storage')
+    await page.goto('/memebot/archive?tab=ops')
     await page.getByRole('button', { name: '从 R2 生成预览' }).click()
     await expect(page.getByLabel('R2 恢复差异摘要')).toBeVisible()
   })

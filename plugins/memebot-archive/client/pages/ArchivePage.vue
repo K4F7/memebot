@@ -2,17 +2,15 @@
 import { router } from '@koishijs/client'
 import { computed } from 'vue'
 
-import LifecycleAuditRegion from '../regions/LifecycleAuditRegion.vue'
 import NewspaperIssuesRegion from '../regions/NewspaperIssuesRegion.vue'
-import StorageRecoveryRegion from '../regions/StorageRecoveryRegion.vue'
+import OpsRegion from '../regions/OpsRegion.vue'
 import WorksRegion from '../regions/WorksRegion.vue'
 import { archiveTabs, normalizeArchiveTab, toArchiveTabQuery, type ArchiveTab } from '../tab-state'
 
 const regions = {
   issues: NewspaperIssuesRegion,
   works: WorksRegion,
-  storage: StorageRecoveryRegion,
-  lifecycle: LifecycleAuditRegion,
+  ops: OpsRegion,
 } as const
 
 const tab = computed<ArchiveTab>({

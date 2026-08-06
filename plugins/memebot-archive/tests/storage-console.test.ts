@@ -38,7 +38,7 @@ describe('Archive storage and recovery Console state', () => {
 
 describe('Archive storage and recovery Console component', () => {
   it('implements actionable, responsive, context-preserving health, backup, recovery, and history states', async () => {
-    const source = await readFile(join(__dirname, '../client/regions/StorageRecoveryRegion.vue'), 'utf8')
+    const source = await readFile(join(__dirname, '../client/regions/OpsRegion.vue'), 'utf8')
     for (const event of [
       'memebot/archive/status',
       'memebot/archive/recheck',
