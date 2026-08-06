@@ -2,7 +2,7 @@
 
 ## Repository scope
 
-This public repository contains standalone Koishi plugins only. Publishable plugin packages live under `plugins/`, and each package must remain independently installable, configurable, buildable, and publishable. A plugin must not require another `memebot-*` plugin at runtime.
+This public repository contains standalone Koishi plugins only. Publishable plugin packages live under `plugins/`, and each package must remain independently installable, configurable, buildable, and publishable. A plugin must not require another `memebot-*` plugin at runtime, except that plugins with protected operations require `memebot-access` as their central authorization source. `memebot-access` must not depend on any business plugin. See `docs/adr/0010-centralize-plugin-authorization.md`.
 
 ## Local Koishi development
 

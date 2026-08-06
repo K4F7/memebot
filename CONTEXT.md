@@ -74,4 +74,12 @@ The maintained user-facing guide to the bot's commands and supported workflows. 
 
 ## Plugin Administrator
 
-A QQ user explicitly authorized to manage a plugin or whose Koishi authority is at least 4. A management group limits where management actions may run; membership in that group does not itself grant administrator status.
+A QQ user authorized through the central authorization source to manage every protected plugin. A management group limits where management actions may run; membership in that group does not itself grant administrator status.
+
+## Management Group
+
+A QQ group in which plugin administrators may perform state-changing management actions. It does not limit ordinary service use or administrator-only reads, grant administrator status to group members, or imply that operational notifications are sent there.
+
+## Notification Group
+
+A QQ group selected to receive operational notifications, such as newly submitted intake records. Receiving notifications does not make it a management group or grant any administrative authority to its members.
