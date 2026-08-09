@@ -2,19 +2,44 @@ import { createHash } from 'node:crypto'
 import { access, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 import { Context, h, Schema } from 'koishi'
-import type { AccessDecision, AccessSession } from 'koishi-plugin-memebot-access'
 import { ArchiveBackupJob, ArchiveCleanupJob, ArchivePreflight, BackupContext, BackupStatusSink, PersistentArchiveBackupQueue, PersistentArchiveCleanupQueue, safeArchiveDiagnostic, WorkPreviewStore } from './extensions'
+import { PayloadArchiveReadAdapter, PayloadArchiveReadError, sendPayloadWork, type PayloadArchiveReadConfig } from './payload-read'
 import { S3R2Store } from './s3'
 
 export { ArchivePreflight, PersistentArchiveBackupQueue, PersistentArchiveCleanupQueue, WorkPreviewStore } from './extensions'
+export { PayloadArchiveReadAdapter, PayloadArchiveReadError, sendPayloadWork } from './payload-read'
+export type { PayloadArchiveReadConfig } from './payload-read'
 
 export const name = 'memebot-archive'
+// Keep the legacy declaration exported for callers that inspect the plugin
+// contract. The runtime declaration below makes Access optional for the
+// Payload read-only mode while retaining it for the legacy local mode.
 export const inject = ['database', 'console', 'access']
+const runtimeInject = { optional: ['database', 'console', 'access'] }
+
+export interface AccessSession {
+  userId?: string
+  guildId?: string
+  channelId?: string
+  user?: { authority?: number }
+}
+
+export type AccessDecision =
+  | { allowed: true }
+  | { allowed: false; reason: 'identity' | 'location'; message: string }
+
+interface ArchiveAccessService {
+  authorizeRead(session: AccessSession): Promise<AccessDecision>
+  authorizeWrite(session: AccessSession): Promise<AccessDecision>
+}
+
+type ArchiveAccessContext = { access: ArchiveAccessService }
 
 export interface Config {
   localPath: string
   paperMaxMb: number
   workMaxMb: number
+  payload?: PayloadArchiveReadConfig
   r2: {
     enabled: boolean
     accountId: string
@@ -29,6 +54,12 @@ export const Config: Schema<Config> = Schema.object({
   localPath: Schema.string().default('data/memebot-archive').description('附件本地存储目录'),
   paperMaxMb: Schema.number().default(100).min(1).description('Paper PDF 最大大小（MB）'),
   workMaxMb: Schema.number().default(500).min(1).description('Work ZIP 最大大小（MB）'),
+  payload: Schema.object({
+    enabled: Schema.boolean().default(false).description('从独立 Payload Archive 读取 Work'),
+    baseUrl: Schema.string().default('').description('Payload Archive 基础 URL'),
+    serviceToken: Schema.string().role('secret').default('').description('Payload Archive machine credential'),
+    timeoutMs: Schema.number().default(10_000).min(100).max(120_000),
+  }).default({ enabled: false, baseUrl: '', serviceToken: '', timeoutMs: 10_000 }),
   r2: Schema.object({
     enabled: Schema.boolean().default(false),
     accountId: Schema.string().default(''),
@@ -1267,13 +1298,13 @@ function accessSession(session: any): AccessSession {
   }
 }
 
-export async function authorizeArchiveSession(ctx: Pick<Context, 'access'>, session: any, action: 'read' | 'write'): Promise<AccessDecision> {
+export async function authorizeArchiveSession(ctx: ArchiveAccessContext, session: any, action: 'read' | 'write'): Promise<AccessDecision> {
   return action === 'read'
     ? ctx.access.authorizeRead(accessSession(session))
     : ctx.access.authorizeWrite(accessSession(session))
 }
 
-async function archiveAccessDenial(ctx: Pick<Context, 'access'>, session: any, action: 'read' | 'write') {
+async function archiveAccessDenial(ctx: ArchiveAccessContext, session: any, action: 'read' | 'write') {
   const decision = await authorizeArchiveSession(ctx, session, action)
   return decision.allowed ? undefined : decision.message
 }
@@ -1406,12 +1437,32 @@ export class ArchiveConsoleFeatures {
   }
 }
 
+function payloadReadMessage(error: unknown): string {
+  if (error instanceof PayloadArchiveReadError) {
+    if (error.kind === 'unauthorized') return 'Archive 机器凭证无效。'
+    if (error.kind === 'unavailable') return 'Archive 服务暂时不可用，请稍后重试。'
+    if (error.kind === 'media') return error.message
+    return 'Archive 服务返回了无法识别的数据。'
+  }
+  return 'Archive 服务暂时不可用，请稍后重试。'
+}
+
 export function apply(ctx: Context, config: Config) {
-  if (!ctx.access) throw new Error('memebot-archive requires memebot-access')
+  const suppliedPayload = config?.payload
   const suppliedR2 = config?.r2
+  const payloadMode = suppliedPayload?.enabled === true
+  const access = (ctx as Context & { access?: ArchiveAccessService }).access
+  if (!payloadMode && !access) throw new Error('memebot-archive requires memebot-access')
+  if (!payloadMode && !(ctx as any).model?.extend) throw new Error('memebot-archive legacy mode requires database')
   config = {
     localPath: config?.localPath || 'data/memebot-archive',
     paperMaxMb: config?.paperMaxMb || 100, workMaxMb: config?.workMaxMb || 500,
+    payload: {
+      enabled: suppliedPayload?.enabled ?? false,
+      baseUrl: suppliedPayload?.baseUrl ?? '',
+      serviceToken: suppliedPayload?.serviceToken ?? '',
+      timeoutMs: suppliedPayload?.timeoutMs || 10_000,
+    },
     r2: {
       enabled: suppliedR2?.enabled ?? false,
       accountId: suppliedR2?.accountId ?? '',
@@ -1421,44 +1472,69 @@ export function apply(ctx: Context, config: Config) {
       objectPrefix: suppliedR2?.objectPrefix || 'memebot-archive',
     },
   }
-  if (config.r2.enabled) {
+  if (!payloadMode && config.r2.enabled) {
     const missing = (['accountId', 'bucketName', 'accessKeyId', 'secretAccessKey'] as const).filter(key => !config.r2[key])
     if (missing.length) throw new Error(`R2 已启用但配置不完整：${missing.join(', ')}`)
   }
-  ctx.model.extend('archivePaper', {
-    id: 'string', issueNumber: 'string', month: 'string', title: 'string', description: 'text', sourceLink: 'string', attachment: 'text', lifecycle: 'string', removedAt: 'timestamp', expiresAt: 'timestamp', purgedAt: 'timestamp', anonymizedAt: 'timestamp', backupState: 'string', backupError: 'text', publishedAt: 'timestamp', updatedAt: 'timestamp',
-  }, { primary: 'id' })
-  ctx.model.extend('archiveWork', { id: 'string', title: 'string', author: 'string', description: 'text', attachment: 'text', lifecycle: 'string', removedAt: 'timestamp', expiresAt: 'timestamp', purgedAt: 'timestamp', anonymizedAt: 'timestamp', backupState: 'string', backupError: 'text', publishedAt: 'timestamp', updatedAt: 'timestamp' }, { primary: 'id' })
-  ctx.model.extend('archiveSequence', { kind: 'string', value: 'unsigned' }, { primary: 'kind' })
-  ctx.model.extend('archiveBackupJob', { id: 'string', recordKind: 'string', recordId: 'string', attachment: 'text', manifest: 'text', state: 'string', attempts: 'unsigned', nextAttemptAt: 'timestamp', error: 'text' }, { primary: 'id' })
-  ctx.model.extend('archiveCleanupJob', { id: 'string', recordKind: 'string', recordId: 'string', objectKeys: 'text', state: 'string', attempts: 'unsigned', nextAttemptAt: 'timestamp', error: 'text' }, { primary: 'id' })
-  ctx.model.extend('archiveRetiredAttachment', { id: 'string', recordKind: 'string', recordId: 'string', attachment: 'text', lifecycle: 'string', removedAt: 'timestamp', expiresAt: 'timestamp', restoredAt: 'timestamp', purgedAt: 'timestamp' }, { primary: 'id' })
-  ctx.model.extend('archiveLifecycleAudit', { id: 'string', actor: 'string', recordKind: 'string', recordId: 'string', action: 'string', details: 'text', createdAt: 'timestamp' }, { primary: 'id' })
-  ctx.model.extend('archivePublicationAppearance', { paperId: 'string', workId: 'string', page: 'string', section: 'string', displayOrder: 'unsigned', createdAt: 'timestamp', updatedAt: 'timestamp' }, { primary: ['paperId', 'workId'] })
-  ctx.model.extend('archiveRestoreAudit', { id: 'string', actor: 'string', action: 'string', result: 'string', details: 'text', createdAt: 'timestamp' }, { primary: 'id' })
-  const metadata = new KoishiArchiveMetadataRepository(ctx)
-  const r2 = config.r2.enabled ? new S3R2Store(config.r2) : undefined
-  const local = new LocalAttachmentStore(config.localPath, r2, config.r2.objectPrefix)
+  if (!payloadMode) {
+    ctx.model.extend('archivePaper', {
+      id: 'string', issueNumber: 'string', month: 'string', title: 'string', description: 'text', sourceLink: 'string', attachment: 'text', lifecycle: 'string', removedAt: 'timestamp', expiresAt: 'timestamp', purgedAt: 'timestamp', anonymizedAt: 'timestamp', backupState: 'string', backupError: 'text', publishedAt: 'timestamp', updatedAt: 'timestamp',
+    }, { primary: 'id' })
+    ctx.model.extend('archiveWork', { id: 'string', title: 'string', author: 'string', description: 'text', attachment: 'text', lifecycle: 'string', removedAt: 'timestamp', expiresAt: 'timestamp', purgedAt: 'timestamp', anonymizedAt: 'timestamp', backupState: 'string', backupError: 'text', publishedAt: 'timestamp', updatedAt: 'timestamp' }, { primary: 'id' })
+    ctx.model.extend('archiveSequence', { kind: 'string', value: 'unsigned' }, { primary: 'kind' })
+    ctx.model.extend('archiveBackupJob', { id: 'string', recordKind: 'string', recordId: 'string', attachment: 'text', manifest: 'text', state: 'string', attempts: 'unsigned', nextAttemptAt: 'timestamp', error: 'text' }, { primary: 'id' })
+    ctx.model.extend('archiveCleanupJob', { id: 'string', recordKind: 'string', recordId: 'string', objectKeys: 'text', state: 'string', attempts: 'unsigned', nextAttemptAt: 'timestamp', error: 'text' }, { primary: 'id' })
+    ctx.model.extend('archiveRetiredAttachment', { id: 'string', recordKind: 'string', recordId: 'string', attachment: 'text', lifecycle: 'string', removedAt: 'timestamp', expiresAt: 'timestamp', restoredAt: 'timestamp', purgedAt: 'timestamp' }, { primary: 'id' })
+    ctx.model.extend('archiveLifecycleAudit', { id: 'string', actor: 'string', recordKind: 'string', recordId: 'string', action: 'string', details: 'text', createdAt: 'timestamp' }, { primary: 'id' })
+    ctx.model.extend('archivePublicationAppearance', { paperId: 'string', workId: 'string', page: 'string', section: 'string', displayOrder: 'unsigned', createdAt: 'timestamp', updatedAt: 'timestamp' }, { primary: ['paperId', 'workId'] })
+    ctx.model.extend('archiveRestoreAudit', { id: 'string', actor: 'string', action: 'string', result: 'string', details: 'text', createdAt: 'timestamp' }, { primary: 'id' })
+  }
+  const metadata = payloadMode ? undefined : new KoishiArchiveMetadataRepository(ctx)
+  const r2 = !payloadMode && config.r2.enabled ? new S3R2Store(config.r2) : undefined
+  const local = !payloadMode ? new LocalAttachmentStore(config.localPath, r2, config.r2.objectPrefix) : undefined
   let service!: ArchiveService
   const sink: BackupStatusSink = { update: async (kind, id, state, error) => {
-    await metadata.updateBackupState(kind, id, state, error)
+    await metadata?.updateBackupState(kind, id, state, error)
     const item = kind === 'paper' ? service?.getIssue(id) : service?.getWork(id)
     if (item) { item.backupState = state; item.backupError = error }
   } }
-  const queue = r2 ? new PersistentArchiveBackupQueue(ctx, local, r2, sink) : undefined
+  const queue = r2 && local ? new PersistentArchiveBackupQueue(ctx, local, r2, sink) : undefined
   const cleanupQueue = r2 ? new PersistentArchiveCleanupQueue(ctx, r2) : undefined
   service = new ArchiveService({ config, metadata, local, r2, backupQueue: queue, cleanupQueue })
-  const preflight = new ArchivePreflight(config.localPath, r2, [config.r2.accessKeyId, config.r2.secretAccessKey])
-  const initialized = service.initialize()
-  const ready = Promise.all([initialized, preflight.check()]).then(([, health]) => { if (health.state === 'unavailable') throw new Error(health.stores.local.error || '本地存储不可用') })
+  const payloadReader = config.payload?.enabled
+    ? new PayloadArchiveReadAdapter(config.payload)
+    : undefined
+  const preflight = payloadMode ? undefined : new ArchivePreflight(config.localPath, r2, [config.r2.accessKeyId, config.r2.secretAccessKey])
+  const initialized = payloadMode ? Promise.resolve() : service.initialize()
+  const ready = payloadMode
+    ? Promise.resolve()
+    : Promise.all([initialized, preflight!.check()]).then(([, health]) => { if (health.state === 'unavailable') throw new Error(health.stores.local.error || '本地存储不可用') })
   void ready.catch(() => undefined)
-  new ArchiveConsoleFeatures(ctx, service, ready, preflight, queue, cleanupQueue, config).register()
-  if (queue) ctx.setInterval(() => { void queue.runDue() }, 60_000)
-  if (cleanupQueue) ctx.setInterval(() => { void cleanupQueue.runDue() }, 60_000)
-  ctx.setInterval(() => { void service.purgeExpired() }, 60_000)
+  // Payload mode owns the Work/Media management surface. Keep the legacy
+  // Console listeners available only for the legacy local archive mode.
+  if (!payloadReader) new ArchiveConsoleFeatures(ctx, service, ready, preflight, queue, cleanupQueue, config).register()
+  if (!payloadMode) {
+    if (queue) ctx.setInterval(() => { void queue.runDue() }, 60_000)
+    if (cleanupQueue) ctx.setInterval(() => { void cleanupQueue.runDue() }, 60_000)
+    ctx.setInterval(() => { void service.purgeExpired() }, 60_000)
+  }
   ;(ctx as any).archive = service
   const root = ctx.command('archive [id:text]', '搜索或获取 Paper 归档')
+  const payloadMvpOnly = '当前 Payload Archive MVP 仅支持在 Payload Admin 管理 Work；QQ 侧只读 Work。'
   root.action(async ({ session }, id) => {
+    if (payloadReader) {
+      if (!id) return '请使用 /archive search works [查询] 或 /archive W<n>。'
+      if (!/^w\d+$/i.test(id)) return '当前 Payload Archive MVP 仅支持 Work W<n>。'
+      try {
+        if (!session) {
+          const work = await payloadReader.getWork(id)
+          return work ? `${work.id} ${work.author} - ${work.title}` : 'Work 不存在。'
+        }
+        return await sendPayloadWork(session, payloadReader, id)
+      } catch (error) {
+        return payloadReadMessage(error)
+      }
+    }
     await ready
     if (!id) return '请使用 /archive search paper [查询]、/archive search works [查询]，或 /archive P/W编号。'
     if (/^w\d+$/i.test(id)) {
@@ -1479,6 +1555,15 @@ export function apply(ctx: Context, config: Config) {
     return h.file(url, { filename })
   })
   root.subcommand('.search <kind:string> [query:text]', '搜索 Paper 或 Work').action(async (_meta, kind, query) => {
+    if (payloadReader) {
+      if (kind.toLocaleLowerCase() !== 'works') return '当前 Payload Archive MVP 仅支持 /archive search works [查询]。'
+      try {
+        const items = await payloadReader.searchWorks({ text: query })
+        return items.length ? items.map(item => `${item.id} ${item.author} - ${item.title}`).join('\n') : '没有找到 Work。'
+      } catch (error) {
+        return payloadReadMessage(error)
+      }
+    }
     await ready
     if (kind.toLocaleLowerCase() === 'paper') {
       const items = service.searchIssues(query)
@@ -1491,10 +1576,11 @@ export function apply(ctx: Context, config: Config) {
     return '请使用 /archive search paper [查询] 或 /archive search works [查询]。'
   })
   root.subcommand('.rm <id:string>', '确认后将 Paper 或 Work 软删除 30 天').action(async ({ session }, id) => {
+    if (payloadReader) return payloadMvpOnly
     await ready
     if (!session) return '无法识别当前会话。'
     const archiveSession = commandSession(session)
-    const denial = await archiveAccessDenial(ctx, session, 'write')
+    const denial = await archiveAccessDenial({ access: access! }, session, 'write')
     if (denial) return denial
     const paper = service.getIssue(id)
     const work = service.getWork(id)
@@ -1513,10 +1599,11 @@ export function apply(ctx: Context, config: Config) {
     return optional && value === '-' ? '' : value
   }
   root.subcommand('.publish.paper', '引导发布一个 Paper PDF').action(async ({ session }) => {
+    if (payloadReader) return payloadMvpOnly
     await ready
     if (!session) return '无法识别当前会话。'
     const archiveSession = commandSession(session)
-    const denial = await archiveAccessDenial(ctx, session, 'write')
+    const denial = await archiveAccessDenial({ access: access! }, session, 'write')
     if (denial) return denial
     try {
       const title = await guidedPrompt(session, '请输入 Paper 标题。')
@@ -1543,10 +1630,11 @@ export function apply(ctx: Context, config: Config) {
     } catch (error) { return safeArchiveDiagnostic(error) }
   })
   root.subcommand('.publish.works', '引导发布一个 ZIP Work Package').action(async ({ session }) => {
+    if (payloadReader) return payloadMvpOnly
     await ready
     if (!session) return '无法识别当前会话。'
     const archiveSession = commandSession(session)
-    const denial = await archiveAccessDenial(ctx, session, 'write')
+    const denial = await archiveAccessDenial({ access: access! }, session, 'write')
     if (denial) return denial
     try {
       const title = await guidedPrompt(session, '请输入 Work 标题。')
@@ -1571,10 +1659,11 @@ export function apply(ctx: Context, config: Config) {
     } catch (error) { return safeArchiveDiagnostic(error) }
   })
   root.subcommand('.edit.paper <id:string>', '引导编辑 Paper 元数据').action(async ({ session }, id) => {
+    if (payloadReader) return payloadMvpOnly
     await ready
     if (!session) return '无法识别当前会话。'
     const archiveSession = commandSession(session)
-    const denial = await archiveAccessDenial(ctx, session, 'write')
+    const denial = await archiveAccessDenial({ access: access! }, session, 'write')
     if (denial) return denial
     const paper = service.getIssue(id)
     if (!paper) return 'Paper 不存在。'
@@ -1589,30 +1678,50 @@ export function apply(ctx: Context, config: Config) {
     return `已更新 Paper ${updated.id}。`
   })
   root.subcommand('.issues [month:text]', '按月份浏览 Paper').action(async (_meta, month) => {
+    if (payloadReader) return '当前 Payload Archive MVP 不提供 Paper。'
     await ready
     const items = service.listIssues(month)
     return items.length ? items.map(item => `${item.id} ${item.month} ${item.title}`).join('\n') : '没有找到 Newspaper Issue。'
   })
   root.subcommand('.works [query:text]', '查询 Work').action(async ({ session }, query) => {
+    if (payloadReader) {
+      try {
+        const items = await payloadReader.searchWorks({ text: query })
+        return items.length ? items.map(item => `${item.id} ${item.author} - ${item.title}`).join('\n') : '没有找到 Work。'
+      } catch (error) {
+        return payloadReadMessage(error)
+      }
+    }
     const items = service.searchWorks({ text: query })
     return items.length ? items.map(item => `${item.id} ${item.author} - ${item.title}`).join('\n') : '没有找到 Work。'
   })
   root.subcommand('.work-query [author:text] [query:text]', '按作者或文本查询 Work').action(async ({ session }, author, query) => {
+    if (payloadReader) {
+      try {
+        const items = await payloadReader.searchWorks({ author, text: query })
+        return items.length ? items.map(item => `${item.id} ${item.author} - ${item.title}`).join('\n') : '没有找到 Work。'
+      } catch (error) {
+        return payloadReadMessage(error)
+      }
+    }
     const items = service.searchWorks({ author, text: query })
     return items.length ? items.map(item => `${item.id} ${item.author} - ${item.title}`).join('\n') : '没有找到 Work。'
   })
   root.subcommand('.issue-preview <metadata:text>', '预览 Newspaper Issue 元数据').action(async ({ session }, metadata) => {
-    const denial = await archiveAccessDenial(ctx, session, 'read')
+    if (payloadReader) return payloadMvpOnly
+    const denial = await archiveAccessDenial({ access: access! }, session, 'read')
     if (denial) return denial
     return JSON.stringify(service.previewIssue(payload(metadata)))
   })
   root.subcommand('.work-preview <metadata:text>', '预览 Work 元数据').action(async ({ session }, metadata) => {
-    const denial = await archiveAccessDenial(ctx, session, 'read')
+    if (payloadReader) return payloadMvpOnly
+    const denial = await archiveAccessDenial({ access: access! }, session, 'read')
     if (denial) return denial
     return JSON.stringify(service.previewWork(payload(metadata)))
   })
   root.subcommand('.issue-publish <metadata:text>', '发布 Newspaper Issue').action(async ({ session }, metadata) => {
-    const denial = await archiveAccessDenial(ctx, session, 'write')
+    if (payloadReader) return payloadMvpOnly
+    const denial = await archiveAccessDenial({ access: access! }, session, 'write')
     if (denial) return denial
     await ready
     const input = payload(metadata) as IssueInput
@@ -1620,36 +1729,42 @@ export function apply(ctx: Context, config: Config) {
     return `已发布 Newspaper Issue ${item.id}。`
   })
   root.subcommand('.work-publish <metadata:text>', '发布 Work').action(async ({ session }, metadata) => {
-    const denial = await archiveAccessDenial(ctx, session, 'write')
+    if (payloadReader) return payloadMvpOnly
+    const denial = await archiveAccessDenial({ access: access! }, session, 'write')
     if (denial) return denial
     const input = payload(metadata) as WorkInput
     const item = await service.publishWork(commandSession(session), { ...input, attachment: input.attachment && decodeAttachmentDataUrl(input.attachment, config.workMaxMb, 'Work ZIP ') })
     return `已发布 Work ${item.id}。`
   })
   root.subcommand('.issue-edit <id:string> <confirmation:string> <patch:text>', '编辑 Newspaper Issue 元数据').action(async ({ session }, id, confirmation, patch) => {
-    const denial = await archiveAccessDenial(ctx, session, 'write')
+    if (payloadReader) return payloadMvpOnly
+    const denial = await archiveAccessDenial({ access: access! }, session, 'write')
     if (denial) return denial
     return `已更新 Newspaper Issue ${(await service.updateIssue(commandSession(session), id, payload(patch), confirmation)).id}。`
   })
   root.subcommand('.work-edit <id:string> <confirmation:string> <patch:text>', '编辑 Work 元数据').action(async ({ session }, id, confirmation, patch) => {
-    const denial = await archiveAccessDenial(ctx, session, 'write')
+    if (payloadReader) return payloadMvpOnly
+    const denial = await archiveAccessDenial({ access: access! }, session, 'write')
     if (denial) return denial
     return `已更新 Work ${(await service.updateWork(commandSession(session), id, payload(patch), confirmation)).id}。`
   })
   root.subcommand('.issue-remove <id:string> <confirmation:string>', '删除 Newspaper Issue').action(async ({ session }, id, confirmation) => {
-    const denial = await archiveAccessDenial(ctx, session, 'write')
+    if (payloadReader) return payloadMvpOnly
+    const denial = await archiveAccessDenial({ access: access! }, session, 'write')
     if (denial) return denial
     await service.removeIssue(commandSession(session), id, confirmation)
     return `已删除 Newspaper Issue ${id}。`
   })
   root.subcommand('.work-remove <id:string> <confirmation:string>', '删除 Work').action(async ({ session }, id, confirmation) => {
-    const denial = await archiveAccessDenial(ctx, session, 'write')
+    if (payloadReader) return payloadMvpOnly
+    const denial = await archiveAccessDenial({ access: access! }, session, 'write')
     if (denial) return denial
     await service.removeWork(commandSession(session), id, confirmation)
     return `已删除 Work ${id}。`
   })
   root.subcommand('.retry', '重试附件 R2 同步').action(async ({ session }) => {
-    const denial = await archiveAccessDenial(ctx, session, 'write')
+    if (payloadReader) return payloadMvpOnly
+    const denial = await archiveAccessDenial({ access: access! }, session, 'write')
     if (denial) return denial
     await service.retryPending()
     return '已重试待同步附件。'
@@ -1657,4 +1772,4 @@ export function apply(ctx: Context, config: Config) {
   return service
 }
 
-export default { name, inject, Config, apply }
+export default { name, inject: runtimeInject, Config, apply }

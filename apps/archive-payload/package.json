@@ -1,0 +1,52 @@
+{
+  "name": "memebot-archive-payload",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "yarn@4.5.3",
+  "engines": {
+    "node": ">=20"
+  },
+  "resolutions": {
+    "sharp": "portal:./vendor/sharp-worker-stub"
+  },
+  "scripts": {
+    "build": "cross-env NODE_OPTIONS=--no-deprecation next build --webpack",
+    "dev": "cross-env NODE_OPTIONS=--no-deprecation next dev",
+    "start": "cross-env NODE_OPTIONS=--no-deprecation next start",
+    "typecheck": "tsc --noEmit --pretty false",
+    "test": "vitest run --config vitest.config.mts",
+    "check:deploy": "node scripts/check-deploy.mjs",
+    "generate:types": "payload generate:types",
+    "generate:importmap": "payload generate:importmap",
+    "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
+    "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+    "deploy": "yarn deploy:database && yarn deploy:app",
+    "deploy:database": "yarn check:deploy && cross-env NODE_ENV=production payload migrate && wrangler d1 execute D1 --command 'PRAGMA optimize' --remote",
+    "deploy:app": "yarn check:deploy && opennextjs-cloudflare build && opennextjs-cloudflare deploy"
+  },
+  "dependencies": {
+    "@faceless-ui/modal": "3.0.0",
+    "@faceless-ui/scroll-info": "2.0.0",
+    "@opennextjs/cloudflare": "1.20.2",
+    "@payloadcms/db-d1-sqlite": "3.82.1",
+    "@payloadcms/next": "3.82.1",
+    "@payloadcms/richtext-lexical": "3.82.1",
+    "@payloadcms/storage-r2": "3.82.1",
+    "@payloadcms/ui": "3.82.1",
+    "cross-env": "10.1.0",
+    "graphql": "^16.8.1",
+    "next": "16.3.0",
+    "payload": "3.82.1",
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.6.2",
+    "vitest": "^3.2.4",
+    "wrangler": "~4.116.0"
+  }
+}

@@ -12,7 +12,7 @@ vi.mock('koishi', () => {
   return { Context: class {}, Schema: { object: chain, array: chain, number: chain, string: chain, boolean: chain } }
 })
 
-import { ArchiveConsoleFeatures, ArchiveService, authorizeArchiveSession, inject, KoishiArchiveMetadataRepository, MemoryR2Store } from '../src/index'
+import { apply, ArchiveConsoleFeatures, ArchiveService, authorizeArchiveSession, inject, KoishiArchiveMetadataRepository, MemoryR2Store } from '../src/index'
 
 const admin = { userId: 'owner', authority: 4 }
 const roots: string[] = []
@@ -148,6 +148,20 @@ describe('archive integration paths', () => {
     const expected = { userId: '123', guildId: '456', channelId: '789', user: { authority: 2 } }
     expect(authorizeRead).toHaveBeenCalledWith(expected)
     expect(authorizeWrite).toHaveBeenCalledWith(expected)
+  })
+  it('keeps Payload read mode independent from Access and legacy storage setup', () => {
+    const command: any = {
+      action: vi.fn(() => command),
+      subcommand: vi.fn(() => command),
+    }
+    const ctx = { command: vi.fn(() => command), setInterval: vi.fn() } as any
+
+    expect(apply(ctx, {
+      localPath: '/tmp/unused', paperMaxMb: 100, workMaxMb: 100,
+      payload: { enabled: true, baseUrl: 'https://archive.test', serviceToken: 'token', timeoutMs: 500 },
+      r2: { enabled: false, accountId: '', bucketName: '', accessKeyId: '', secretAccessKey: '', objectPrefix: 'unused' },
+    } as any)).toBeInstanceOf(ArchiveService)
+    expect(ctx.setInterval).not.toHaveBeenCalled()
   })
   it('blocks removed Work preview files at every Console attachment route', async () => {
     const root = await tempRoot()

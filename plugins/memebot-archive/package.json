@@ -1,6 +1,6 @@
 {
   "name": "koishi-plugin-memebot-archive",
-  "version": "0.1.1-alpha.17",
+  "version": "0.1.1-alpha.19",
   "description": "自用，月度报纸与作品归档插件",
   "license": "MIT",
   "main": "lib/index.js",
@@ -28,8 +28,7 @@
     "koishi": "^4.18.7"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.864.0",
-    "koishi-plugin-memebot-access": "workspace:^"
+    "@aws-sdk/client-s3": "^3.864.0"
   },
   "devDependencies": {
     "@koishijs/client": "^5.30.11",

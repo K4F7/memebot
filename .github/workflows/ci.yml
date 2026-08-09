@@ -18,3 +18,18 @@ jobs:
       - run: yarn typecheck
       - run: yarn build
       - run: yarn check:plugin-loads
+      - name: Verify Payload archive app
+        working-directory: apps/archive-payload
+        run: corepack yarn install --immutable
+      - name: Typecheck Payload archive app
+        working-directory: apps/archive-payload
+        run: corepack yarn typecheck
+      - name: Test Payload archive app
+        working-directory: apps/archive-payload
+        run: corepack yarn test
+      - name: Build Payload archive app
+        working-directory: apps/archive-payload
+        run: corepack yarn build
+      - name: Bundle Payload archive Worker
+        working-directory: apps/archive-payload
+        run: corepack yarn opennextjs-cloudflare build
