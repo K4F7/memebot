@@ -1442,7 +1442,7 @@ function payloadReadMessage(error: unknown): string {
     if (error.kind === 'unauthorized') return 'Archive 机器凭证无效。'
     if (error.kind === 'unavailable') return 'Archive 服务暂时不可用，请稍后重试。'
     if (error.kind === 'media') return error.message
-    return 'Archive 服务返回了无法识别的数据。'
+    return 'Archive 服务暂时不可用，请稍后重试。'
   }
   return 'Archive 服务暂时不可用，请稍后重试。'
 }

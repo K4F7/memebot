@@ -163,6 +163,29 @@ describe('archive integration paths', () => {
     } as any)).toBeInstanceOf(ArchiveService)
     expect(ctx.setInterval).not.toHaveBeenCalled()
   })
+  it('routes malformed Payload search responses to the stable temporary-unavailable message', async () => {
+    const handlers = new Map<string, (...args: any[]) => Promise<any>>()
+    const command = (name: string): any => {
+      const value = {
+        action(handler: (...args: any[]) => Promise<any>) { handlers.set(name, handler); return value },
+        subcommand(child: string) { return command(`${name}${child}`) },
+      }
+      return value
+    }
+    const ctx = { command: (name: string) => command(name), setInterval: vi.fn() } as any
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ data: { id: 'W1' } }), { headers: { 'content-type': 'application/json' } })))
+    try {
+      apply(ctx, {
+        localPath: '/tmp/unused', paperMaxMb: 100, workMaxMb: 100,
+        payload: { enabled: true, baseUrl: 'https://archive.test', serviceToken: 'token', timeoutMs: 500 },
+        r2: { enabled: false, accountId: '', bucketName: '', accessKeyId: '', secretAccessKey: '', objectPrefix: 'unused' },
+      } as any)
+      const search = [...handlers.entries()].find(([name]) => name.includes('.search '))?.[1]
+      await expect(search?.({}, 'works')).resolves.toBe('Archive 服务暂时不可用，请稍后重试。')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
   it('blocks removed Work preview files at every Console attachment route', async () => {
     const root = await tempRoot()
     const handlers = new Map<string, (...args: any[]) => Promise<any>>()
