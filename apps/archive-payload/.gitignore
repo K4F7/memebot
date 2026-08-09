@@ -9,5 +9,6 @@ src/payload-types.ts
 .env
 .env.*
 !.env.example
+deploy/.current-image
 AGENTS.md
 CLAUDE.md

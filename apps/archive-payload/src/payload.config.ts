@@ -1,23 +1,44 @@
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { getCloudflareContext, type CloudflareContext } from '@opennextjs/cloudflare'
-import { sqliteD1Adapter } from '@payloadcms/db-d1-sqlite'
+import { postgresAdapter } from '@payloadcms/db-postgres'
 import { lexicalEditor } from '@payloadcms/richtext-lexical'
-import { r2Storage } from '@payloadcms/storage-r2'
+import { s3Storage } from '@payloadcms/storage-s3'
 import { buildConfig } from 'payload'
-import type { GetPlatformProxyOptions } from 'wrangler'
 
 import { ArchiveSequences, Media, Users, WorkMedia, Works } from './collections'
+import { migrations } from './migrations'
 
 const filename = fileURLToPath(import.meta.url)
 const dirname = path.dirname(filename)
 const isProduction = process.env.NODE_ENV === 'production'
-const isPayloadCli = process.argv.some((value) => typeof value === 'string' && value.includes(`${path.sep}payload${path.sep}bin`))
+const isBuild = process.env.PAYLOAD_BUILD === '1'
+const productionRequired = [
+  'PAYLOAD_SECRET',
+  'DATABASE_URL',
+  'R2_BUCKET',
+  'R2_ENDPOINT',
+  'R2_ACCESS_KEY_ID',
+  'R2_SECRET_ACCESS_KEY',
+  'ARCHIVE_SERVICE_TOKEN',
+  'ARCHIVE_MEDIA_SIGNING_SECRET',
+]
+const missingProduction = productionRequired.filter((name) => !process.env[name])
+if (isProduction && !isBuild && missingProduction.length) {
+  throw new Error(`Missing production environment variables: ${missingProduction.join(', ')}`)
+}
 
-const cloudflareLogger = {
+const r2Configured = Boolean(
+  process.env.R2_BUCKET &&
+    process.env.R2_ENDPOINT &&
+    process.env.R2_ACCESS_KEY_ID &&
+    process.env.R2_SECRET_ACCESS_KEY,
+)
+
+const nodeLogger = {
   level: process.env.PAYLOAD_LOG_LEVEL || 'info',
-  trace: (...args: unknown[]) => console.debug(...args),
+  trace: (...args: unknown[]) => console.trace(...args),
   debug: (...args: unknown[]) => console.debug(...args),
   info: (...args: unknown[]) => console.info(...args),
   warn: (...args: unknown[]) => console.warn(...args),
@@ -26,12 +47,7 @@ const cloudflareLogger = {
   silent: (): undefined => undefined,
 } as any
 
-const cloudflare = isPayloadCli || !isProduction
-  ? await getCloudflareContextFromWrangler()
-  : await getCloudflareContext({ async: true })
-
-const secret = process.env.PAYLOAD_SECRET || 'local-development-payload-secret'
-if (isProduction && secret === 'local-development-payload-secret') console.warn('PAYLOAD_SECRET is not configured; set it before deploying.')
+const secret = process.env.PAYLOAD_SECRET || randomUUID()
 
 export default buildConfig({
   admin: {
@@ -42,24 +58,33 @@ export default buildConfig({
   editor: lexicalEditor(),
   secret,
   typescript: { outputFile: path.resolve(dirname, 'payload-types.ts') },
-  db: sqliteD1Adapter({ binding: cloudflare.env.D1 }),
-  logger: isProduction ? cloudflareLogger : undefined,
+  db: postgresAdapter({
+    pool: {
+      connectionString: process.env.DATABASE_URL,
+    },
+    migrationDir: path.resolve(dirname, 'migrations'),
+    // A long-running VPS process can apply pending migrations before Payload
+    // initializes. The deploy script only considers the release healthy after
+    // this initialization has completed.
+    prodMigrations: migrations,
+    push: !isProduction,
+  }),
+  logger: isProduction ? nodeLogger : undefined,
   plugins: [
-    r2Storage({
-      bucket: cloudflare.env.R2,
-      // Browser uploads use the R2 multipart path instead of buffering files
-      // through the Worker application.
-      clientUploads: true,
+    s3Storage({
+      enabled: r2Configured,
+      bucket: process.env.R2_BUCKET || 'memebot-archive',
       collections: { media: true },
+      disableLocalStorage: isProduction,
+      config: {
+        credentials: {
+          accessKeyId: process.env.R2_ACCESS_KEY_ID || '',
+          secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '',
+        },
+        endpoint: process.env.R2_ENDPOINT,
+        forcePathStyle: true,
+        region: process.env.R2_REGION || 'auto',
+      },
     }),
   ],
 })
-
-function getCloudflareContextFromWrangler(): Promise<CloudflareContext> {
-  return import(/* webpackIgnore: true */ `${'__wrangler'.replaceAll('_', '')}`).then(
-    ({ getPlatformProxy }: { getPlatformProxy: (options: GetPlatformProxyOptions) => Promise<CloudflareContext> }) => getPlatformProxy({
-      environment: process.env.CLOUDFLARE_ENV,
-      remoteBindings: isProduction,
-    } satisfies GetPlatformProxyOptions),
-  )
-}

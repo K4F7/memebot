@@ -1,16 +1,17 @@
 import type { CollectionConfig } from 'payload'
+import { sql } from '@payloadcms/db-postgres'
 
 import { relationId } from '../archive/relations'
 
 const archiveIdentifier = /^W[1-9]\d*$/
 
 async function allocateArchiveIdentifier(req: any): Promise<string> {
-  // D1 can atomically increment the sequence even when several admin requests arrive together.
-  const client = req.payload.db?.drizzle?.$client
-  if (client) {
-    await client.prepare('INSERT OR IGNORE INTO archive_sequences (id, value) VALUES (?, ?)').bind(1, 0).run()
-    const row = await client.prepare('UPDATE archive_sequences SET value = value + 1 WHERE id = ? RETURNING value').bind(1).first()
-    if (row && Number((row as any).value) > 0) return `W${Number((row as any).value)}`
+  const drizzle = req.payload.db?.drizzle
+  if (drizzle) {
+    await drizzle.execute(sql`INSERT INTO archive_sequences (id, value) VALUES (1, 0) ON CONFLICT (id) DO NOTHING`)
+    const result = await drizzle.execute(sql`UPDATE archive_sequences SET value = value + 1, updated_at = now() WHERE id = 1 RETURNING value`)
+    const value = Number((result.rows?.[0] as any)?.value)
+    if (value > 0) return `W${value}`
   }
   const sequence = await req.payload.findByID({
     collection: 'archive-sequences',

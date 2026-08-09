@@ -1,10 +1,15 @@
-import { readFile } from 'node:fs/promises'
+const required = [
+  'PAYLOAD_SECRET',
+  'DATABASE_URL',
+  'R2_BUCKET',
+  'R2_ENDPOINT',
+  'R2_ACCESS_KEY_ID',
+  'R2_SECRET_ACCESS_KEY',
+  'ARCHIVE_SERVICE_TOKEN',
+  'ARCHIVE_MEDIA_SIGNING_SECRET',
+]
 
-if (!process.env.PAYLOAD_SECRET) {
-  throw new Error('PAYLOAD_SECRET must be set before deploying the Payload application.')
-}
-
-const wrangler = await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8')
-if (wrangler.includes('REPLACE_WITH_D1_DATABASE_ID')) {
-  throw new Error('Replace d1_databases[0].database_id in wrangler.jsonc before deploying.')
+const missing = required.filter((name) => !process.env[name])
+if (missing.length) {
+  throw new Error(`Missing production environment variables: ${missing.join(', ')}`)
 }

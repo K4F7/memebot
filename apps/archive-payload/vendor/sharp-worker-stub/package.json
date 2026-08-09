@@ -1,9 +1,0 @@
-{
-  "name": "sharp",
-  "version": "0.35.3",
-  "private": true,
-  "main": "index.cjs",
-  "exports": {
-    ".": "./index.cjs"
-  }
-}

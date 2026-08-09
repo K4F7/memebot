@@ -50,11 +50,11 @@ One historical issue of the club newspaper. It has searchable metadata, a PDF pu
 
 ## Work
 
-A historical club or member work that can be searched by metadata and retrieved as a work package. An external link may supplement but does not replace its package.
+A historical club or member work represented by searchable metadata and one or more ordered Media Items. A Work can be retrieved through its associated media, and its Archive Identifier remains stable.
 
-## Work Package
+## Media Item
 
-The single ZIP archive containing all files that constitute one work. Every work has exactly one valid work package, including works whose content could otherwise fit in one file.
+A file belonging to exactly one Work, such as an image or PDF, with its own display order. A Media Item is not shared between Works.
 
 ## Publication Appearance
 
@@ -64,9 +64,9 @@ The occurrence of a work in a newspaper issue, optionally identified by a page o
 
 A stable public reference assigned to one newspaper issue or work. It remains associated with that item throughout publication, removal, restoration, and retrieval and is never reused.
 
-## Archive Backup
+## Archive Administrator
 
-A secondary copy of an archived attachment used for recovery. Failure to create it does not invalidate a successfully stored archive attachment and remains eligible for retry.
+A user account authorized to manage Archive records in the PayloadCMS administration surface. It is not a QQ identity and does not grant memebot-access authorization.
 
 ## Help Document
 
