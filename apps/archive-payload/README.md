@@ -30,6 +30,10 @@ The application does not create that database. Create the database and user once
 existing PostgreSQL administration workflow. Do not put the password in Git or in a GitHub Actions
 log.
 
+The public service name is `https://meme.sein.moe`. Configure 1Panel's reverse proxy to forward it
+to `http://127.0.0.1:13000`; TLS and Nginx configuration are intentionally outside this repository.
+The container continues to listen on port `3000` internally.
+
 Media files remain in a private Cloudflare R2 bucket through its S3-compatible API. Payload uses
 `@payloadcms/storage-s3`, which is the Node.js-compatible R2 integration. The API returns short-lived
 signed media URLs; the bucket is not made public.
@@ -60,8 +64,14 @@ chmod 700 /srv/memebot/archive-payload
 chmod 600 /srv/memebot/archive-payload/.env
 ```
 
+Before approving a production deployment that includes a database migration, take the required
+PostgreSQL dump. Payload applies the checked-in migration during startup after approval; an image
+rollback never downgrades the database schema, so the previous image must remain compatible with
+the migrated schema.
+
 The deployment script keeps the previous image reference and restores it if the health check fails.
-The health endpoint is `GET /api/health`.
+The health endpoint is `GET /api/health` and is reachable locally at
+`http://127.0.0.1:13000/api/health`.
 
 The workflow is `.github/workflows/deploy-archive-payload-vps.yml`. Create a GitHub `production`
 Environment with required approval, then configure:

@@ -22,7 +22,7 @@ rollback() {
   export IMAGE_REF="$previous_image"
   docker compose -f compose.yml up -d archive-payload || return 0
   for _ in {1..30}; do
-    if curl --fail --silent --show-error http://127.0.0.1:3000/api/health >/dev/null; then
+    if curl --fail --silent --show-error http://127.0.0.1:13000/api/health >/dev/null; then
       echo "Previous image is healthy." >&2
       return 0
     fi
@@ -44,7 +44,7 @@ docker compose -f compose.yml up -d archive-payload || fail_deploy
 
 healthy=0
 for _ in {1..30}; do
-  if curl --fail --silent --show-error http://127.0.0.1:3000/api/health >/dev/null; then
+  if curl --fail --silent --show-error http://127.0.0.1:13000/api/health >/dev/null; then
     healthy=1
     break
   fi

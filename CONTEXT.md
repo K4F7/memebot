@@ -50,11 +50,19 @@ One historical issue of the club newspaper. It has searchable metadata, a PDF pu
 
 ## Work
 
-A historical club or member work represented by searchable metadata and one or more ordered Media Items. A Work can be retrieved through its associated media, and its Archive Identifier remains stable.
+A historical club or member work represented by searchable metadata and one or more Media Items. A Work is readable only when it has at least one valid WorkMedia Relationship to a non-withdrawn Media Item, and its Archive Identifier is never reused.
 
 ## Media Item
 
-A file belonging to exactly one Work, such as an image or PDF, with its own display order. A Media Item is not shared between Works.
+A file owned by exactly one Work, such as an image or PDF. Its filename, media type, and size describe the file; presentation order and captions belong to its WorkMedia Relationship, and filenames need not be unique across Media Items.
+
+## WorkMedia Relationship
+
+The relationship that presents one Media Item in one Work. It carries a unique display order normalized from zero without gaps and an optional caption, must agree with the Media Item's owning Work, and a Media Item may appear in at most one relationship.
+
+## Withdrawn Media Item
+
+A Media Item intentionally excluded from Archive reads while its metadata and private object are retained. Withdrawal is not physical deletion, and restoration is a later lifecycle capability.
 
 ## Publication Appearance
 
@@ -62,11 +70,15 @@ The occurrence of a work in a newspaper issue, optionally identified by a page o
 
 ## Archive Identifier
 
-A stable public reference assigned to one newspaper issue or work. It remains associated with that item throughout publication, removal, restoration, and retrieval and is never reused.
+A stable public reference assigned to one newspaper issue or work. It remains associated with that item throughout its archive lifetime and is never reused.
+
+## Archive Read Contract
+
+The versioned machine-facing boundary through which Koishi searches Works, retrieves Work details, and requests protected Media Items. It is separate from Payload's administration and generated collection endpoints.
 
 ## Archive Administrator
 
-A user account authorized to manage Archive records in the PayloadCMS administration surface. It is not a QQ identity and does not grant memebot-access authorization.
+A user account authorized to manage Archive records in the PayloadCMS administration surface. In the MVP, every authenticated Archive Administrator may withdraw Media Items but none may physically delete Archive records; this identity is not a QQ identity and does not grant memebot-access authorization.
 
 ## Help Document
 
