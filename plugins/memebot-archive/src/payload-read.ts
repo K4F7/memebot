@@ -48,7 +48,33 @@ export interface PayloadArchiveReadOptions {
 function ensureBaseUrl(value: string): URL {
   const baseUrl = value.trim()
   if (!baseUrl) throw new PayloadArchiveReadError('unavailable', 'Payload Archive URL 未配置。')
-  try { return new URL(baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`) } catch { throw new PayloadArchiveReadError('unavailable', 'Payload Archive URL 无效。') }
+  try {
+    const url = new URL(baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('unsupported protocol')
+    url.hash = ''
+    return url
+  } catch {
+    throw new PayloadArchiveReadError('unavailable', 'Payload Archive URL 无效。')
+  }
+}
+
+function ensureServiceToken(value: string): string {
+  const token = value.trim()
+  if (!token) throw new PayloadArchiveReadError('unavailable', 'Payload Archive machine credential 未配置。')
+  return token
+}
+
+function versionedApiUrl(baseUrl: URL): URL {
+  const url = new URL(baseUrl)
+  const path = url.pathname.replace(/\/+$/, '')
+  url.pathname = path.endsWith('/api/archive/v1') ? `${path}/` : `${path}/api/archive/v1/`
+  url.search = ''
+  url.hash = ''
+  return url
+}
+
+function normalizeTimeout(value: number): number {
+  return Math.max(1, Math.floor(value || 10_000))
 }
 
 function errorFromStatus(status: number): PayloadArchiveReadError {
@@ -78,13 +104,15 @@ function detail(value: unknown): ArchiveWorkDetail {
     const id = String(entry.id || '').trim()
     const filename = String(entry.filename || '').trim()
     const contentType = String(entry.contentType || '').trim().toLowerCase()
+    const rawSize = entry.size
+    const size = rawSize === undefined || rawSize === null ? 0 : Number(rawSize)
     const access = entry.access && typeof entry.access === 'object' ? entry.access as Record<string, unknown> : undefined
     const url = String(access?.url || '').trim()
     const expiresAt = String(access?.expiresAt || '').trim()
-    if (!id || !filename || !/^(?:image\/(?:avif|bmp|gif|jpe?g|png|tiff|webp)|application\/pdf)$/i.test(contentType) || !url || !expiresAt || !Number.isFinite(Date.parse(expiresAt))) {
+    if (!id || !filename || !/^(?:image\/(?:avif|bmp|gif|jpe?g|png|tiff|webp)|application\/pdf)$/i.test(contentType) || !url || !expiresAt || !Number.isFinite(Date.parse(expiresAt)) || !Number.isSafeInteger(size) || size < 0) {
       throw new PayloadArchiveReadError('contract', `Media descriptor ${id || filename || 'unknown'} 无效。`)
     }
-    return { id, filename, contentType, size: Number(entry.size || 0), caption: entry.caption ? String(entry.caption) : undefined, access: { url, expiresAt } }
+    return { id, filename, contentType, size, caption: entry.caption ? String(entry.caption) : undefined, access: { url, expiresAt } }
   })
   return { ...work, media }
 }
@@ -92,16 +120,20 @@ function detail(value: unknown): ArchiveWorkDetail {
 export class PayloadArchiveReadAdapter {
   private readonly request: typeof globalThis.fetch
   private readonly now: () => number
-  private readonly baseUrl: URL
+  private readonly apiBaseUrl: URL
+  private readonly serviceToken: string
+  private readonly timeoutMs: number
 
-  constructor(private readonly config: PayloadArchiveReadConfig, options: PayloadArchiveReadOptions = {}) {
+  constructor(config: PayloadArchiveReadConfig, options: PayloadArchiveReadOptions = {}) {
     this.request = options.fetch || globalThis.fetch.bind(globalThis)
     this.now = options.now || (() => Date.now())
-    this.baseUrl = ensureBaseUrl(config.baseUrl)
+    this.apiBaseUrl = versionedApiUrl(ensureBaseUrl(config.baseUrl))
+    this.serviceToken = ensureServiceToken(config.serviceToken)
+    this.timeoutMs = normalizeTimeout(config.timeoutMs)
   }
 
   async searchWorks(filters: { text?: string; author?: string } = {}): Promise<ArchiveWorkSummary[]> {
-    const url = new URL('api/archive/v1/works', this.baseUrl)
+    const url = new URL('works', this.apiBaseUrl)
     if (filters.text?.trim()) url.searchParams.set('query', filters.text.trim())
     if (filters.author?.trim()) url.searchParams.set('author', filters.author.trim())
     const body = await this.jsonRequest(url)
@@ -113,7 +145,7 @@ export class PayloadArchiveReadAdapter {
   async getWork(id: string): Promise<ArchiveWorkDetail | undefined> {
     const archiveId = id.trim().toUpperCase()
     if (!/^W[1-9]\d*$/.test(archiveId)) return undefined
-    const url = new URL(`api/archive/v1/works/${encodeURIComponent(archiveId)}`, this.baseUrl)
+    const url = new URL(`works/${encodeURIComponent(archiveId)}`, this.apiBaseUrl)
     let response: Response
     try {
       response = await this.requestWithTimeout(url)
@@ -130,15 +162,20 @@ export class PayloadArchiveReadAdapter {
   }
 
   async fetchMedia(media: ArchiveMediaDescriptor): Promise<Uint8Array> {
-    if (Date.parse(media.access.expiresAt) <= this.now()) throw new PayloadArchiveReadError('media', `${media.filename} 获取失败。`, 401)
+    const expiresAt = Date.parse(media.access.expiresAt)
+    if (!Number.isFinite(expiresAt) || expiresAt <= this.now()) throw new PayloadArchiveReadError('media', `${media.filename} 获取失败。`, 401)
     let response: Response
     try {
-      response = await this.requestWithTimeout(new URL(media.access.url, this.baseUrl), { headers: { accept: media.contentType } })
+      response = await this.requestWithTimeout(new URL(media.access.url, this.apiBaseUrl), { headers: { accept: media.contentType } }, false)
     } catch (error) {
       if (error instanceof PayloadArchiveReadError) throw new PayloadArchiveReadError('media', `${media.filename} 获取失败。`)
       throw new PayloadArchiveReadError('media', `${media.filename} 获取失败。`)
     }
     if (!response.ok) throw new PayloadArchiveReadError('media', `${media.filename} 获取失败。`, response.status)
+    const responseContentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
+    if (responseContentType && responseContentType !== media.contentType.toLowerCase()) {
+      throw new PayloadArchiveReadError('media', `${media.filename} 获取失败。`, 415)
+    }
     try { return new Uint8Array(await response.arrayBuffer()) } catch { throw new PayloadArchiveReadError('media', `${media.filename} 响应无法读取。`) }
   }
 
@@ -152,16 +189,13 @@ export class PayloadArchiveReadAdapter {
     try { return await response.json() } catch { throw new PayloadArchiveReadError('contract', 'Payload Archive 响应不是有效 JSON。') }
   }
 
-  private async requestWithTimeout(url: URL, init: RequestInit = {}): Promise<Response> {
+  private async requestWithTimeout(url: URL, init: RequestInit = {}, authenticate = true): Promise<Response> {
     const controller = new AbortController()
-    const timeoutMs = Math.max(1, Math.floor(this.config.timeoutMs || 10_000))
+    const timeoutMs = this.timeoutMs
     const timer = setTimeout(() => controller.abort(), timeoutMs)
     try {
       const headers = new Headers(init.headers)
-      const isProtectedMedia = /\/api\/archive\/v1\/media(?:\/|$)/.test(url.pathname)
-      if (!isProtectedMedia && (url.pathname.startsWith('/api/archive/v1') || url.pathname.includes('/api/archive/v1/'))) {
-        if (!headers.has('authorization')) headers.set('authorization', `Bearer ${this.config.serviceToken}`)
-      }
+      if (authenticate && !headers.has('authorization')) headers.set('authorization', `Bearer ${this.serviceToken}`)
       const response = await this.request(url, { ...init, headers, signal: controller.signal })
       return response
     } catch (error) {
@@ -183,7 +217,7 @@ export async function sendPayloadWork(session: Session, adapter: PayloadArchiveR
       const bytes = await adapter.fetchMedia(media)
       const dataUrl = `data:${media.contentType};base64,${Buffer.from(bytes).toString('base64')}`
       const content = media.contentType.startsWith('image/') ? h.image(dataUrl) : h.file(dataUrl, { filename: media.filename })
-      nodes.push(h('message', {}, [media.caption ? `${media.caption}\n` : '', content]))
+      nodes.push(h('message', {}, media.caption ? [`${media.caption}\n`, content] : [content]))
     } catch (error) {
       const message = error instanceof PayloadArchiveReadError ? error.message : `${media.filename} 获取失败。`
       nodes.push(h('message', {}, message))
