@@ -15,6 +15,9 @@ private `R2` bucket and the `D1` metadata binding. Set `PAYLOAD_SECRET`,
 `yarn build` runs the Next production build; `yarn deploy` applies D1 migrations and deploys the
 OpenNext worker.
 
+The OpenNext Worker bundle requires a Cloudflare Workers Paid plan. The Free plan's 3 MiB Worker
+script limit is smaller than the Payload Admin/runtime bundle, even with Wrangler minification.
+
 The authenticated `/admin` panel is the only write surface. The collections are:
 
 - `works`: title, author, optional description, and server-assigned stable `W<n>` identifier;

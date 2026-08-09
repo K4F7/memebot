@@ -23,7 +23,7 @@
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "deploy": "yarn deploy:database && yarn deploy:app",
     "deploy:database": "yarn check:deploy && cross-env NODE_ENV=production payload migrate && wrangler d1 execute D1 --command 'PRAGMA optimize' --remote",
-    "deploy:app": "yarn check:deploy && opennextjs-cloudflare build && opennextjs-cloudflare deploy"
+    "deploy:app": "yarn check:deploy && opennextjs-cloudflare build && opennextjs-cloudflare deploy --minify"
   },
   "dependencies": {
     "@faceless-ui/modal": "3.0.0",
