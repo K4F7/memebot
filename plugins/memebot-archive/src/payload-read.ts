@@ -45,6 +45,8 @@ export interface PayloadArchiveReadOptions {
   now?: () => number
 }
 
+const MAX_FORWARD_NODES = 20
+
 function ensureBaseUrl(value: string): URL {
   const baseUrl = value.trim()
   if (!baseUrl) throw new PayloadArchiveReadError('unavailable', 'Payload Archive URL 未配置。')
@@ -75,6 +77,28 @@ function versionedApiUrl(baseUrl: URL): URL {
 
 function normalizeTimeout(value: number): number {
   return Math.max(1, Math.floor(value || 10_000))
+}
+
+function resolveProtectedMediaUrl(media: ArchiveMediaDescriptor, apiBaseUrl: URL): URL {
+  let url: URL
+  try {
+    url = new URL(media.access.url, apiBaseUrl)
+  } catch {
+    throw new PayloadArchiveReadError('contract', `Media descriptor ${media.id} 的 access URL 无效。`)
+  }
+  const mediaPrefix = `${apiBaseUrl.pathname}media/`
+  let mediaId: string
+  try {
+    mediaId = decodeURIComponent(url.pathname.startsWith(mediaPrefix) ? url.pathname.slice(mediaPrefix.length) : '')
+  } catch {
+    mediaId = ''
+  }
+  const expires = Number(url.searchParams.get('expires'))
+  const signature = url.searchParams.get('signature')?.trim()
+  if (url.origin !== apiBaseUrl.origin || !mediaId || mediaId !== media.id || !Number.isSafeInteger(expires) || expires <= 0 || !signature) {
+    throw new PayloadArchiveReadError('contract', `Media descriptor ${media.id} 的 protected access 无效。`)
+  }
+  return url
 }
 
 function errorFromStatus(status: number): PayloadArchiveReadError {
@@ -158,15 +182,18 @@ export class PayloadArchiveReadAdapter {
     let body: unknown
     try { body = await response.json() } catch { throw new PayloadArchiveReadError('contract', 'Work detail 不是有效 JSON。') }
     const value = (body as any)?.data ?? (body as any)?.work ?? body
-    return detail(value)
+    const work = detail(value)
+    for (const media of work.media) resolveProtectedMediaUrl(media, this.apiBaseUrl)
+    return work
   }
 
   async fetchMedia(media: ArchiveMediaDescriptor): Promise<Uint8Array> {
     const expiresAt = Date.parse(media.access.expiresAt)
     if (!Number.isFinite(expiresAt) || expiresAt <= this.now()) throw new PayloadArchiveReadError('media', `${media.filename} 获取失败。`, 401)
+    const mediaUrl = resolveProtectedMediaUrl(media, this.apiBaseUrl)
     let response: Response
     try {
-      response = await this.requestWithTimeout(new URL(media.access.url, this.apiBaseUrl), { headers: { accept: media.contentType } }, false)
+      response = await this.requestWithTimeout(mediaUrl, { headers: { accept: media.contentType } }, false)
     } catch (error) {
       if (error instanceof PayloadArchiveReadError) throw new PayloadArchiveReadError('media', `${media.filename} 获取失败。`)
       throw new PayloadArchiveReadError('media', `${media.filename} 获取失败。`)
@@ -223,6 +250,9 @@ export async function sendPayloadWork(session: Session, adapter: PayloadArchiveR
       nodes.push(h('message', {}, message))
     }
   }
-  await session.send(h('message', { forward: true }, nodes))
+  const header = nodes[0]
+  for (let index = 1; index < nodes.length; index += MAX_FORWARD_NODES - 1) {
+    await session.send(h('message', { forward: true }, [header, ...nodes.slice(index, index + MAX_FORWARD_NODES - 1)]))
+  }
   return `已发送 Work ${work.id}。`
 }

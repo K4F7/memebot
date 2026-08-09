@@ -54,6 +54,28 @@ describe('PayloadArchiveReadAdapter', () => {
     await expect(unavailable.searchWorks()).rejects.toMatchObject<Partial<PayloadArchiveReadError>>({ kind: 'unavailable' })
   })
 
+  it('classifies authentication, timeout, and malformed boundary responses', async () => {
+    const unauthorized = new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
+      fetch: (async () => new Response(null, { status: 401 })) as typeof fetch,
+    })
+    await expect(unauthorized.searchWorks()).rejects.toMatchObject<Partial<PayloadArchiveReadError>>({ kind: 'unauthorized', status: 401 })
+
+    const timedOut = new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
+      fetch: (async () => { throw Object.assign(new Error('aborted'), { name: 'AbortError' }) }) as typeof fetch,
+    })
+    await expect(timedOut.searchWorks()).rejects.toMatchObject<Partial<PayloadArchiveReadError>>({ kind: 'unavailable' })
+
+    const malformedJson = new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
+      fetch: (async () => new Response('{not-json', { headers: { 'content-type': 'application/json' } })) as typeof fetch,
+    })
+    await expect(malformedJson.searchWorks()).rejects.toMatchObject<Partial<PayloadArchiveReadError>>({ kind: 'contract' })
+
+    const malformedShape = new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
+      fetch: (async () => new Response(JSON.stringify({ data: { id: 'W1' } }), { headers: { 'content-type': 'application/json' } })) as typeof fetch,
+    })
+    await expect(malformedShape.searchWorks()).rejects.toMatchObject<Partial<PayloadArchiveReadError>>({ kind: 'contract' })
+  })
+
   it('downloads protected media without leaking the machine credential', async () => {
     const requests: Request[] = []
     const adapter = new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
@@ -85,7 +107,7 @@ describe('PayloadArchiveReadAdapter', () => {
     })
     const media = {
       id: 'm1', filename: 'cover.png', contentType: 'image/png', size: 3,
-      access: { url: '/api/archive/v1/not-media/m1?expires=9999999999&signature=signed', expiresAt: '2030-01-01T00:00:00.000Z' },
+      access: { url: '/api/archive/v1/media/m1?expires=9999999999&signature=signed', expiresAt: '2030-01-01T00:00:00.000Z' },
     }
     await expect(adapter.fetchMedia(media)).resolves.toEqual(new Uint8Array([1, 2, 3]))
     expect(requests[0].headers.get('authorization')).toBeNull()
@@ -97,6 +119,18 @@ describe('PayloadArchiveReadAdapter', () => {
         id: 'W1', title: 'Example', author: 'Alice', media: [{
           id: 'm1', filename: 'cover.png', contentType: 'image/png', size: 'not-a-number',
           access: { url: '/api/archive/v1/media/m1?expires=9999999999&signature=signed', expiresAt: '2030-01-01T00:00:00.000Z' },
+        }],
+      } }), { headers: { 'content-type': 'application/json' } })) as typeof fetch,
+    })
+    await expect(adapter.getWork('W1')).rejects.toMatchObject<Partial<PayloadArchiveReadError>>({ kind: 'contract' })
+  })
+
+  it('rejects media access that is not the signed Payload media endpoint', async () => {
+    const adapter = new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
+      fetch: (async () => new Response(JSON.stringify({ data: {
+        id: 'W1', title: 'Example', author: 'Alice', media: [{
+          id: 'm1', filename: 'cover.png', contentType: 'image/png', size: 1,
+          access: { url: 'https://evil.test/file.png', expiresAt: '2030-01-01T00:00:00.000Z' },
         }],
       } }), { headers: { 'content-type': 'application/json' } })) as typeof fetch,
     })
@@ -168,5 +202,23 @@ describe('PayloadArchiveReadAdapter', () => {
       [{ type: 'file', value: 'data:application/pdf;base64,Ag==', attrs: { filename: 'text.pdf' } }],
       'broken.png 获取失败。',
     ])
+  })
+
+  it('splits a large Work into multiple merged-forward messages without reordering items', async () => {
+    const media = Array.from({ length: 20 }, (_, index) => ({
+      id: `m${index + 1}`, filename: `image-${index + 1}.png`, contentType: 'image/png', size: 1,
+      access: { url: `/media/m${index + 1}`, expiresAt: '2030-01-01T00:00:00.000Z' },
+    }))
+    const adapter = {
+      getWork: vi.fn(async () => ({ id: 'W1', title: 'Gallery', author: 'Alice', media })),
+      fetchMedia: vi.fn(async () => new Uint8Array([1])),
+    }
+    const session = { send: vi.fn(async () => undefined) }
+
+    await expect(sendPayloadWork(session as any, adapter as any, 'W1')).resolves.toBe('已发送 Work W1。')
+    expect(session.send).toHaveBeenCalledTimes(2)
+    const forwards = session.send.mock.calls.map(([message]) => message as any)
+    expect(forwards.every((message) => message.attrs.forward === true)).toBe(true)
+    expect(forwards.flatMap((message) => message.children.slice(1).map((node: any) => node.children[0].value))).toEqual(media.map((item) => `data:image/png;base64,AQ==`))
   })
 })
