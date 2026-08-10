@@ -38,8 +38,18 @@ export const Works: CollectionConfig = {
     useAsTitle: 'title',
     defaultColumns: ['archiveId', 'title', 'author', 'updatedAt'],
     description: {
-      en: 'Archived works. A work is readable when it has Work Media pointing to active Media.',
-      zh: '档案作品。可读性取决于是否存在指向未撤回 Media 的 WorkMedia。',
+      en: 'Archived works. Edit through the unified Work media editor; publication is explicit.',
+      zh: '档案作品。请通过统一的作品编辑页管理媒体文件；发布需显式操作。',
+    },
+    components: {
+      views: {
+        edit: {
+          // Replaces the default form edit tab while keeping Admin shell, auth, and document chrome.
+          default: {
+            Component: '@/admin/work-editor/WorkEditView#WorkEditView',
+          },
+        },
+      },
     },
   },
   access: {
