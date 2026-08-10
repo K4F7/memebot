@@ -10,7 +10,6 @@ import { MAX_MEDIA_SIZE } from './archive/media-policy'
 import { r2StoragePlugin } from './archive/r2-payload-storage'
 import { ArchiveSequences, Media, Users, WorkMedia, Works } from './collections'
 import { databaseConnectionString } from './database-config'
-import { seedDevelopmentAdmin } from './dev-admin'
 import { migrations } from './migrations'
 
 const filename = fileURLToPath(import.meta.url)
@@ -93,13 +92,5 @@ export default buildConfig({
     push: !isProduction,
   }),
   logger: isProduction ? nodeLogger : undefined,
-  onInit: async (payload) => {
-    const result = await seedDevelopmentAdmin(payload)
-    if (result.status === 'created') {
-      payload.logger.info(`Created development admin account for ${result.email}.`)
-    } else if (result.status === 'exists') {
-      payload.logger.info(`Development admin account already exists for ${result.email}.`)
-    }
-  },
   plugins: [r2StoragePlugin],
 })
