@@ -175,6 +175,11 @@ Work、Media、WorkMedia、顺序、撤回和删除权限验收在 `apps/archive
 默认测试完全使用内存或 fake HTTP Payload 边界，不访问生产数据库或真实 R2。Payload 应用
 的部署配置和运行时凭据只在 `apps/archive-payload/` 的独立环境中提供。
 
+Archive 的真实 staging 验收是显式 opt-in 的黑盒检查，操作说明见
+[`docs/testing/archive-staging.md`](docs/testing/archive-staging.md)。未提供 staging URL 和
+machine credential 时，`yarn smoke:archive-staging` 只会输出 `NOT EXECUTED`，不会发起网络
+请求；默认 CI 也不会注入这些凭据。
+
 ## 发布插件
 
 在 GitHub Actions secrets 中配置 npm access token `NPM_TOKEN`。更新目标插件自己的

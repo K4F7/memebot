@@ -87,6 +87,19 @@ tagged with the commit SHA, records the registry digest, pushes it to GHCR, uplo
 files, logs the VPS into GHCR with the read-only token, and activates the digest over SSH. It does
 not provision a database.
 
+## Staging acceptance
+
+The manual `.github/workflows/deploy-archive-payload-staging.yml` workflow targets an isolated VPS
+directory and a dedicated PostgreSQL database/R2 bucket. It injects a protected staging `.env`,
+deploys an immutable image with the existing health-checked rollback script, and runs the opt-in
+black-box Archive/Koishi checks before and after deployment. See
+[`docs/testing/archive-staging.md`](../../docs/testing/archive-staging.md) for the Environment
+variables, failure fixtures, and the `corepack yarn smoke:archive-staging` command.
+
+The current accepted runtime is VPS + PostgreSQL + private R2 S3. The historical Workers + D1
+configuration is not part of this app and must not be reintroduced without a new architecture
+decision.
+
 ## Commands
 
 ```sh
