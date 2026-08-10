@@ -18,6 +18,21 @@ For local development, Payload uses `push` mode to keep PostgreSQL in sync. Prod
 checked-in files in `src/migrations/`; an empty Neon database still needs the initial schema
 migration before the first deployment.
 
+To seed one local Admin account automatically, opt in explicitly and provide local-only
+credentials. The seed runs only when `NODE_ENV=development`, never during a build or migration; it
+is idempotent and does not overwrite an existing password:
+
+```sh
+PAYLOAD_DEV_ADMIN_SEED=1 \
+PAYLOAD_DEV_ADMIN_EMAIL='dev@example.com' \
+PAYLOAD_DEV_ADMIN_PASSWORD='local-development-password' \
+DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/memebot_archive \
+  corepack yarn dev
+```
+
+Keep these variables out of Vercel Production. The first account can still be created manually at
+`/admin/create-first-user` when the development seed is disabled.
+
 ## Vercel project setup
 
 Create or select the Vercel Project and connect the repository with Vercel Git Integration. Set the
