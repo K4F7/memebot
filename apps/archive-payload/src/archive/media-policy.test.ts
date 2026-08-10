@@ -8,6 +8,8 @@ import {
   verifyUploadContext,
 } from './media-policy'
 import { Media } from '../collections/Media'
+import { Works } from '../collections/Works'
+import { validateMediaMimeType } from './mime'
 
 describe('media storage policy', () => {
   it('creates opaque, independent storage keys', () => {
@@ -80,5 +82,21 @@ describe('media storage policy', () => {
     })
 
     expect(result).toMatchObject({ overwriteExistingFiles: true })
+  })
+
+  it('keeps an existing Archive Identifier immutable during API updates', async () => {
+    const hook = Works.hooks?.beforeValidate?.[0] as any
+    const result = await hook({
+      data: { archiveId: 'W99', title: 'Updated', author: 'Author' },
+      operation: 'update',
+      originalDoc: { archiveId: 'W1', title: 'Original', author: 'Author' },
+      req: { payload: {} },
+    })
+
+    expect(result).toMatchObject({ archiveId: 'W1', title: 'Updated' })
+  })
+
+  it('accepts TIFF as a supported image media type', () => {
+    expect(validateMediaMimeType('image/tiff')).toBe('image/tiff')
   })
 })

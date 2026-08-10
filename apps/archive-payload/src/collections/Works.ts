@@ -43,6 +43,7 @@ export const Works: CollectionConfig = {
     beforeValidate: [async ({ data, operation, originalDoc, req }) => {
       const next = { ...((originalDoc || {}) as Record<string, unknown>), ...(data || {}) } as Record<string, unknown>
       if (operation === 'create') next.archiveId = await allocateArchiveIdentifier(req)
+      else if (originalDoc?.archiveId) next.archiveId = originalDoc.archiveId
       const id = String(next.archiveId || '').trim().toUpperCase()
       if (!archiveIdentifier.test(id)) throw new Error('Archive Identifier 必须是 W<n>。')
       next.archiveId = id
