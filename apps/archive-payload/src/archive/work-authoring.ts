@@ -70,6 +70,15 @@ export interface StoredWork {
   published?: StoredPublishedSnapshot
 }
 
+export interface CleanupIntent {
+  workId: string
+  mediaId: string
+  storageKey: string
+  status: 'pending' | 'deleted' | 'failed'
+  attempts: number
+  lastError?: string
+}
+
 export interface AuthorizeUploadResult {
   putUrl: string
   headers?: Record<string, string>
@@ -153,6 +162,8 @@ export interface WorkAuthoringRepository {
     storageKey: string
     req?: AuthoringRequestContext
   }): Promise<void>
+  listCleanupIntents(input: { limit: number; req?: AuthoringRequestContext }): Promise<CleanupIntent[]>
+  markCleanupIntent(input: { storageKey: string; status: CleanupIntent['status']; attempts: number; lastError?: string; req?: AuthoringRequestContext }): Promise<void>
   withWorkLock<T>(workId: string, req: AuthoringRequestContext | undefined, callback: () => Promise<T>): Promise<T>
 }
 
@@ -361,11 +372,7 @@ export class AuthoringService {
       return { work: saved, cleanup }
     })
     for (const media of result.cleanup) {
-      try {
-        await this.objectStore.delete(media.storageKey)
-      } catch {
-        // The durable intent remains retryable when object deletion fails.
-      }
+      await this.deleteCleanupObject({ workId: id, mediaId: media.id, storageKey: media.storageKey }, req)
     }
     return this.aggregate(result.work, await this.repository.getPublished(id, req), req)
   }
@@ -416,6 +423,10 @@ export class AuthoringService {
       } catch {
         throw new AuthoringServiceError('r2_transfer_failed', 'R2 上传授权失败，请重试。', { uploadId })
       }
+      // Registration is pending-upload bookkeeping, not a change to the
+      // versioned Work aggregate. Finalization is the aggregate mutation that
+      // advances the revision, which also lets the browser authorize a batch
+      // in parallel before serializing finalization.
       return { revision: work.revision, media, signed }
     })
     return {
@@ -437,19 +448,39 @@ export class AuthoringService {
       throw new AuthoringServiceError('validation', '上传幂等键不能为空。', { field: 'idempotencyKey', uploadId: input.uploadId })
     }
     const idempotencyKey = input.idempotencyKey.trim()
-    const verified = verifyUploadContext(input.context, { secret: this.uploadSecret, now: this.now() })
-    if (!verified || verified.workId !== id || verified.uploadId !== input.uploadId) {
-      throw new AuthoringServiceError('upload_authorization_expired', '上传授权已过期或无效。', { uploadId: input.uploadId })
-    }
     const existing = await this.repository.findMediaByIdempotency(id, idempotencyKey, req)
     if (existing?.status === 'finalized') {
-      if (existing.uploadId !== input.uploadId || existing.filename !== verified.filename || existing.filesize !== verified.filesize || existing.mimeType !== verified.mimeType) {
+      if (existing.uploadId !== input.uploadId) {
         throw new AuthoringServiceError('conflict', '幂等键已用于另一份上传。', { uploadId: input.uploadId })
+      }
+      const now = this.now()
+      const verified = verifyUploadContext(input.context, { secret: this.uploadSecret, now })
+      const expiredContext = input.context && typeof input.context === 'object'
+        ? input.context as Partial<UploadContext>
+        : undefined
+      const isExpiredRetry = Boolean(
+        expiredContext
+        && expiredContext.workId === id
+        && expiredContext.uploadId === input.uploadId
+        && expiredContext.storageKey === existing.storageKey
+        && typeof expiredContext.expiresAt === 'number'
+        && expiredContext.expiresAt <= now,
+      )
+      if (verified) {
+        if (verified.workId !== id || verified.uploadId !== input.uploadId || existing.filename !== verified.filename || existing.filesize !== verified.filesize || existing.mimeType !== verified.mimeType) {
+          throw new AuthoringServiceError('conflict', '幂等键已用于另一份上传。', { uploadId: input.uploadId })
+        }
+      } else if (!isExpiredRetry) {
+        throw new AuthoringServiceError('upload_authorization_expired', '上传授权已过期或无效。', { uploadId: input.uploadId })
       }
       const aggregate = await this.getWork(id, req)
       const mediaItem = aggregate.media.find((item) => item.mediaId === existing.id)
       if (!mediaItem) throw new AuthoringServiceError('conflict', '上传幂等记录与草稿不一致。', { uploadId: input.uploadId })
       return { ...aggregate, mediaItem }
+    }
+    const verified = verifyUploadContext(input.context, { secret: this.uploadSecret, now: this.now() })
+    if (!verified || verified.workId !== id || verified.uploadId !== input.uploadId) {
+      throw new AuthoringServiceError('upload_authorization_expired', '上传授权已过期或无效。', { uploadId: input.uploadId })
     }
     const head = await this.objectStore.head(verified.storageKey)
     if (!head) throw new AuthoringServiceError('upload_finalization_failed', 'R2 对象不存在，无法确认上传。', { uploadId: input.uploadId })
@@ -479,7 +510,8 @@ export class AuthoringService {
         entry.caption = nextManifest[targetIndex].caption
         nextManifest[targetIndex] = entry
       } else {
-        const selectionIndex = Number.isSafeInteger(input.selectionIndex) ? Math.max(0, input.selectionIndex!) : nextManifest.length
+        const requestedSelectionIndex = input.selectionIndex ?? media.selectionIndex
+        const selectionIndex = Number.isSafeInteger(requestedSelectionIndex) ? Math.max(0, Number(requestedSelectionIndex)) : nextManifest.length
         nextManifest.splice(Math.min(selectionIndex, nextManifest.length), 0, entry)
       }
       const updated = await this.repository.finalizeUpload({
@@ -528,12 +560,21 @@ export class AuthoringService {
       await this.repository.recordCleanupIntent({ workId: id, mediaId, storageKey: media.storageKey, req })
       return { updated, media }
     })
-    try {
-      await this.objectStore.delete(result.media.storageKey)
-    } catch {
-      // The durable intent remains retryable when object deletion fails.
-    }
+    await this.deleteCleanupObject({ workId: id, mediaId, storageKey: result.media.storageKey }, req)
     return this.aggregate(result.updated, await this.repository.getPublished(id, req), req)
+  }
+
+  /** Process durable cleanup intents; safe to call from a cron/queue worker. */
+  async retryCleanup(limit = 50, req?: AuthoringRequestContext): Promise<{ processed: number; deleted: number; failed: number }> {
+    const intents = await this.repository.listCleanupIntents({ limit: Math.max(1, Math.min(500, Math.floor(limit))), req })
+    let deleted = 0
+    let failed = 0
+    for (const intent of intents) {
+      const success = await this.deleteCleanupObject(intent, req)
+      if (success) deleted += 1
+      else failed += 1
+    }
+    return { processed: intents.length, deleted, failed }
   }
 
   async publish(workId: string, input: { revision: string }, req?: AuthoringRequestContext): Promise<WorkAggregate> {
@@ -573,6 +614,24 @@ export class AuthoringService {
     throw new AuthoringServiceError('stale_revision', '其他编辑者已修改该作品，请刷新后重新应用更改。', {
       currentRevision: work.revision,
     })
+  }
+
+  private async deleteCleanupObject(intent: Pick<CleanupIntent, 'workId' | 'mediaId' | 'storageKey'> & Partial<Pick<CleanupIntent, 'attempts'>>, req?: AuthoringRequestContext): Promise<boolean> {
+    const attempts = (intent.attempts || 0) + 1
+    try {
+      await this.objectStore.delete(intent.storageKey)
+      await this.repository.markCleanupIntent({ storageKey: intent.storageKey, status: 'deleted', attempts, req })
+      return true
+    } catch (error) {
+      await this.repository.markCleanupIntent({
+        storageKey: intent.storageKey,
+        status: 'failed',
+        attempts,
+        lastError: error instanceof Error ? error.message : String(error),
+        req,
+      }).catch((): undefined => undefined)
+      return false
+    }
   }
 
   private async validateManifest(workId: string, entries: ManifestSaveEntry[], req?: AuthoringRequestContext): Promise<StoredManifestEntry[]> {
@@ -657,7 +716,7 @@ export class InMemoryWorkAuthoringRepository implements WorkAuthoringRepository 
   private mediaSequence = 0
   private readonly works = new Map<string, StoredWork>()
   private readonly media = new Map<string, StoredMedia>()
-  readonly cleanupIntents = new Map<string, { workId: string; mediaId: string; storageKey: string }>()
+  readonly cleanupIntents = new Map<string, CleanupIntent>()
   private readonly locks = new Map<string, Promise<void>>()
 
   async createWork(input: { title: string; author: string; description?: string; revision: string }): Promise<StoredWork> {
@@ -776,7 +835,26 @@ export class InMemoryWorkAuthoringRepository implements WorkAuthoringRepository 
   }
 
   async recordCleanupIntent(input: { workId: string; mediaId: string; storageKey: string }): Promise<void> {
-    this.cleanupIntents.set(input.storageKey, { ...input })
+    const previous = this.cleanupIntents.get(input.storageKey)
+    this.cleanupIntents.set(input.storageKey, {
+      ...input,
+      status: 'pending',
+      attempts: previous?.attempts || 0,
+      lastError: undefined,
+    })
+  }
+
+  async listCleanupIntents(input: { limit: number }): Promise<CleanupIntent[]> {
+    return [...this.cleanupIntents.values()]
+      .filter((intent) => intent.status === 'pending' || intent.status === 'failed')
+      .slice(0, input.limit)
+      .map((intent) => ({ ...intent }))
+  }
+
+  async markCleanupIntent(input: { storageKey: string; status: CleanupIntent['status']; attempts: number; lastError?: string }): Promise<void> {
+    const intent = this.cleanupIntents.get(input.storageKey)
+    if (!intent) return
+    this.cleanupIntents.set(input.storageKey, { ...intent, status: input.status, attempts: input.attempts, lastError: input.lastError })
   }
 
   async withWorkLock<T>(workId: string, _req: AuthoringRequestContext | undefined, callback: () => Promise<T>): Promise<T> {

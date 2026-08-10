@@ -99,4 +99,10 @@ describe('media storage policy', () => {
   it('accepts TIFF as a supported image media type', () => {
     expect(validateMediaMimeType('image/tiff')).toBe('image/tiff')
   })
+
+  it('keeps published-media withdrawal available without reopening aggregate writes', () => {
+    const update = Media.access?.update as any
+    expect(update({ req: { user: { id: 1 }, context: {} }, data: { withdrawnAt: '2026-08-11T00:00:00.000Z' } })).toBe(true)
+    expect(update({ req: { user: { id: 1 }, context: {} }, data: { alt: 'outside aggregate' } })).toBe(false)
+  })
 })

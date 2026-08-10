@@ -39,7 +39,8 @@ describe('Work Authoring aggregate seam', () => {
   it('finalizes uploads idempotently and preserves browser selection order', async () => {
     const repository = new InMemoryWorkAuthoringRepository()
     const objectStore = new InMemoryAuthoringObjectStore()
-    const authoring = new AuthoringService(repository, objectStore, { uploadSecret: 'test-secret' })
+    let now = Date.now()
+    const authoring = new AuthoringService(repository, objectStore, { uploadSecret: 'test-secret', now: () => now })
     const draft = await authoring.createWork({ title: '作品', author: '作者' })
 
     const first = await authoring.authorizeUpload(draft.workId, {
@@ -55,7 +56,6 @@ describe('Work Authoring aggregate seam', () => {
       uploadId: first.upload.uploadId,
       idempotencyKey: 'idem-first',
       context: first.upload.context,
-      selectionIndex: 1,
     })
     expect(firstFinal.media.map((item) => item.filename)).toEqual(['first.png'])
 
@@ -72,10 +72,10 @@ describe('Work Authoring aggregate seam', () => {
       uploadId: second.upload.uploadId,
       idempotencyKey: 'idem-second',
       context: second.upload.context,
-      selectionIndex: 0,
     })
     expect(secondFinal.media.map((item) => item.filename)).toEqual(['zero.pdf', 'first.png'])
 
+    now += 11 * 60 * 1000
     const retry = await authoring.finalizeUpload(draft.workId, {
       revision: draft.revision,
       uploadId: first.upload.uploadId,
@@ -199,6 +199,44 @@ describe('Work Authoring aggregate seam', () => {
     await expect(repository.listMedia(draft.workId)).resolves.toEqual([])
     expect(repository.cleanupIntents.get(upload.upload.storageKey)).toMatchObject({ mediaId: finalized.media[0].mediaId })
     await expect(objectStore.head(upload.upload.storageKey)).resolves.toBeNull()
+  })
+
+  it('retries failed cleanup intents idempotently', async () => {
+    const repository = new InMemoryWorkAuthoringRepository()
+    const objectStore = new InMemoryAuthoringObjectStore()
+    const originalDelete = objectStore.delete.bind(objectStore)
+    let fail = true
+    objectStore.delete = async (storageKey: string) => {
+      if (fail) throw new Error('temporary R2 outage')
+      await originalDelete(storageKey)
+    }
+    const authoring = new AuthoringService(repository, objectStore, { uploadSecret: 'test-secret' })
+    const draft = await authoring.createWork({ title: '作品', author: '作者' })
+    const upload = await authoring.authorizeUpload(draft.workId, {
+      revision: draft.revision,
+      filename: 'retry.png',
+      filesize: 3,
+      mimeType: 'image/png',
+    })
+    objectStore.put(upload.upload.storageKey, 3, 'image/png')
+    const finalized = await authoring.finalizeUpload(draft.workId, {
+      revision: draft.revision,
+      uploadId: upload.upload.uploadId,
+      idempotencyKey: 'retry-1',
+      context: upload.upload.context,
+    })
+    await authoring.saveDraft(draft.workId, {
+      revision: finalized.revision,
+      title: finalized.title,
+      author: finalized.author,
+      media: [],
+    })
+    expect(repository.cleanupIntents.get(upload.upload.storageKey)).toMatchObject({ status: 'failed', attempts: 1 })
+
+    fail = false
+    await expect(authoring.retryCleanup()).resolves.toMatchObject({ processed: 1, deleted: 1, failed: 0 })
+    expect(repository.cleanupIntents.get(upload.upload.storageKey)).toMatchObject({ status: 'deleted', attempts: 2 })
+    await expect(authoring.retryCleanup()).resolves.toMatchObject({ processed: 0, deleted: 0, failed: 0 })
   })
 
   it('keeps the published snapshot and complete draft when promotion fails', async () => {

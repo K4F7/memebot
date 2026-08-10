@@ -5,6 +5,12 @@ import { createR2MediaEndpoint } from '../archive/r2-payload-storage'
 import { ensureMediaStorageKey, MAX_MEDIA_SIZE, verifyUploadContext } from '../archive/media-policy'
 import { ALLOWED_MEDIA_TYPES, validateMediaMimeType } from '../archive/mime'
 
+function isWithdrawalOnly(data: unknown): boolean {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return false
+  const keys = Object.keys(data as Record<string, unknown>)
+  return keys.length === 1 && keys[0] === 'withdrawnAt'
+}
+
 export const Media: CollectionConfig = {
   slug: 'media',
   labels: {
@@ -23,7 +29,7 @@ export const Media: CollectionConfig = {
   access: {
     read: ({ req }) => Boolean(req.user),
     create: ({ req }) => Boolean(req.user && (req as any).context?.workAuthoring),
-    update: ({ req }) => Boolean(req.user && (req as any).context?.workAuthoring),
+    update: ({ req, data }) => Boolean(req.user && ((req as any).context?.workAuthoring || isWithdrawalOnly(data))),
     // MVP keeps media records auditable; withdrawing a Work/Media item is a
     // metadata operation and must not physically delete the R2 object.
     delete: () => false,

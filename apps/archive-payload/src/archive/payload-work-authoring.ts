@@ -3,6 +3,7 @@ import { commitTransaction, initTransaction, killTransaction } from 'payload'
 
 import type {
   AuthoringRequestContext,
+  CleanupIntent,
   StoredManifestEntry,
   StoredMedia,
   StoredPublishedSnapshot,
@@ -30,6 +31,7 @@ function relationId(value: unknown): string | undefined {
 function requestFor(payload: PayloadLike, input?: AuthoringRequestContext): any {
   const req = (input || {}) as any
   req.payload = payload
+  if (req.user === undefined && (input as any)?.user !== undefined) req.user = (input as any).user
   req.headers ||= new Headers()
   req.context = { ...(req.context || {}), workAuthoring: true }
   req.routeParams ||= {}
@@ -275,10 +277,41 @@ export class PayloadWorkAuthoringRepository implements WorkAuthoringRepository {
     })
   }
 
+  async listCleanupIntents(input: { limit: number; req?: AuthoringRequestContext }): Promise<CleanupIntent[]> {
+    const result = await this.payload.find({
+      collection: 'media-cleanups', depth: 0, limit: input.limit, pagination: false, overrideAccess: true, req: requestFor(this.payload, input.req),
+      where: { status: { in: ['pending', 'failed'] } },
+      sort: 'updatedAt',
+    })
+    return (result.docs || []).map((doc) => ({
+      workId: relationId(doc.work) || '',
+      mediaId: String(doc.mediaId || ''),
+      storageKey: String(doc.storageKey || ''),
+      status: doc.status === 'failed' ? 'failed' : 'pending',
+      attempts: Number(doc.attempts || 0),
+      lastError: doc.lastError ? String(doc.lastError) : undefined,
+    }))
+  }
+
+  async markCleanupIntent(input: { storageKey: string; status: CleanupIntent['status']; attempts: number; lastError?: string; req?: AuthoringRequestContext }): Promise<void> {
+    const req = requestFor(this.payload, input.req)
+    const result = await this.payload.find({
+      collection: 'media-cleanups', depth: 0, limit: 1, pagination: false, overrideAccess: true, req,
+      where: { storageKey: { equals: input.storageKey } },
+    })
+    const doc = result.docs?.[0]
+    if (!doc) return
+    await this.payload.update({
+      collection: 'media-cleanups', id: doc.id, overrideAccess: true, req,
+      data: { status: input.status, attempts: input.attempts, lastError: input.lastError || null },
+    })
+  }
+
   async withWorkLock<T>(workId: string, input: AuthoringRequestContext | undefined, callback: () => Promise<T>): Promise<T> {
     const req = requestFor(this.payload, input)
-    const started = await initTransaction(req)
+    let started = false
     try {
+      started = await initTransaction(req)
       const transactionID = req.transactionID ? await req.transactionID : undefined
       const db = transactionID ? this.payload.db?.sessions?.[transactionID]?.db : this.payload.db?.drizzle
       if (db?.execute) await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`memebot:work-authoring:${workId}`}))`)
