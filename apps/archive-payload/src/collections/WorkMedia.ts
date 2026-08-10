@@ -56,14 +56,17 @@ async function normalizeWorkMediaOrder(req: any, workId: string, relationshipId:
 export const WorkMedia: CollectionConfig = {
   slug: 'work-media',
   labels: {
-    singular: 'WorkMedia',
-    plural: 'WorkMedia',
+    singular: { en: 'Work Media', zh: '作品媒体' },
+    plural: { en: 'Work Media', zh: '作品媒体' },
   },
   admin: {
-    group: '档案管理',
+    group: { en: 'Archive', zh: '档案管理' },
     useAsTitle: 'id',
     defaultColumns: ['work', 'media', 'displayOrder', 'caption'],
-    description: 'Work 的媒体呈现关系，承载显示顺序与可选 caption。',
+    description: {
+      en: 'Media presentation relationships for a Work, including display order and an optional caption.',
+      zh: 'Work 的媒体呈现关系，承载显示顺序与可选 caption。',
+    },
   },
   access: {
     read: ({ req }) => Boolean(req.user),
@@ -102,9 +105,16 @@ export const WorkMedia: CollectionConfig = {
     }],
   },
   fields: [
-    { name: 'work', type: 'relationship', relationTo: 'works', required: true },
-    { name: 'media', type: 'relationship', relationTo: 'media', required: true, unique: true },
-    { name: 'displayOrder', type: 'number', required: true, defaultValue: 0, min: 0 },
-    { name: 'caption', type: 'text' },
+    { name: 'work', type: 'relationship', relationTo: 'works', required: true, label: { en: 'Work', zh: '作品' } },
+    { name: 'media', type: 'relationship', relationTo: 'media', required: true, unique: true, label: { en: 'Media', zh: '媒体' } },
+    {
+      name: 'displayOrder',
+      type: 'number',
+      required: true,
+      defaultValue: 0,
+      min: 0,
+      label: { en: 'Display order', zh: '显示顺序' },
+    },
+    { name: 'caption', type: 'text', label: { en: 'Caption', zh: '说明文字' } },
   ],
 }

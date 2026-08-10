@@ -30,14 +30,17 @@ async function allocateArchiveIdentifier(req: any): Promise<string> {
 export const Works: CollectionConfig = {
   slug: 'works',
   labels: {
-    singular: 'Work',
-    plural: 'Works',
+    singular: { en: 'Work', zh: '作品' },
+    plural: { en: 'Works', zh: '作品' },
   },
   admin: {
-    group: '档案管理',
+    group: { en: 'Archive', zh: '档案管理' },
     useAsTitle: 'title',
     defaultColumns: ['archiveId', 'title', 'author', 'updatedAt'],
-    description: '档案作品。可读性取决于是否存在指向未撤回 Media 的 WorkMedia。',
+    description: {
+      en: 'Archived works. A work is readable when it has Work Media pointing to active Media.',
+      zh: '档案作品。可读性取决于是否存在指向未撤回 Media 的 WorkMedia。',
+    },
   },
   access: {
     read: ({ req }) => Boolean(req.user),
@@ -66,12 +69,19 @@ export const Works: CollectionConfig = {
       type: 'text',
       required: true,
       unique: true,
-      admin: { readOnly: true, description: '稳定且永不复用的 Archive Identifier' },
+      label: { en: 'Archive ID', zh: '档案编号' },
+      admin: {
+        readOnly: true,
+        description: {
+          en: 'A stable Archive Identifier that is never reused.',
+          zh: '稳定且永不复用的 Archive Identifier',
+        },
+      },
       validate: (value: unknown) => archiveIdentifier.test(String(value || '').toUpperCase()) || 'Archive Identifier 必须是 W<n>。',
     },
-    { name: 'title', type: 'text', required: true },
-    { name: 'author', type: 'text', required: true },
-    { name: 'description', type: 'textarea' },
+    { name: 'title', type: 'text', required: true, label: { en: 'Title', zh: '标题' } },
+    { name: 'author', type: 'text', required: true, label: { en: 'Author', zh: '作者' } },
+    { name: 'description', type: 'textarea', label: { en: 'Description', zh: '描述' } },
   ],
 }
 

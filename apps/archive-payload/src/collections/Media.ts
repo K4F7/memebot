@@ -8,14 +8,17 @@ import { ALLOWED_MEDIA_TYPES, validateMediaMimeType } from '../archive/mime'
 export const Media: CollectionConfig = {
   slug: 'media',
   labels: {
-    singular: 'Media',
-    plural: 'Media',
+    singular: { en: 'Media', zh: '媒体' },
+    plural: { en: 'Media', zh: '媒体' },
   },
   admin: {
-    group: '档案管理',
+    group: { en: 'Archive', zh: '档案管理' },
     useAsTitle: 'filename',
     defaultColumns: ['filename', 'mimeType', 'filesize', 'work', 'withdrawnAt'],
-    description: '媒体文件。所属 Work 创建后不可修改；撤回后保留元数据与 R2 对象。',
+    description: {
+      en: 'Media files. The owning Work cannot change after creation; withdrawal preserves metadata and the R2 object.',
+      zh: '媒体文件。所属 Work 创建后不可修改；撤回后保留元数据与 R2 对象。',
+    },
   },
   access: {
     read: ({ req }) => Boolean(req.user),
@@ -82,7 +85,13 @@ export const Media: CollectionConfig = {
       type: 'relationship',
       relationTo: 'works',
       required: true,
-      admin: { description: '每个 Media Item 必须属于且仅属于一个 Work。' },
+      label: { en: 'Work', zh: '所属作品' },
+      admin: {
+        description: {
+          en: 'Every Media item must belong to exactly one Work.',
+          zh: '每个 Media Item 必须属于且仅属于一个 Work。',
+        },
+      },
     },
     {
       name: 'storageKey',
@@ -91,11 +100,17 @@ export const Media: CollectionConfig = {
       unique: true,
       admin: { hidden: true, readOnly: true },
     },
-    { name: 'alt', type: 'text' },
+    { name: 'alt', type: 'text', label: { en: 'Alternative text', zh: '替代文本' } },
     {
       name: 'withdrawnAt',
       type: 'date',
-      admin: { description: '填写后从 Archive 读 API 隐藏，但保留元数据和 R2 对象。' },
+      label: { en: 'Withdrawn at', zh: '撤回时间' },
+      admin: {
+        description: {
+          en: 'Once set, this item is hidden from the Archive read API while its metadata and R2 object are retained.',
+          zh: '填写后从 Archive 读 API 隐藏，但保留元数据和 R2 对象。',
+        },
+      },
     },
   ],
 }

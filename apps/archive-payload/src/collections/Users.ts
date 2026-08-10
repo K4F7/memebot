@@ -3,13 +3,16 @@ import type { CollectionConfig } from 'payload'
 export const Users: CollectionConfig = {
   slug: 'users',
   labels: {
-    singular: '用户',
-    plural: '用户',
+    singular: { en: 'User', zh: '用户' },
+    plural: { en: 'Users', zh: '用户' },
   },
   admin: {
-    group: '系统管理',
+    group: { en: 'System', zh: '系统管理' },
     useAsTitle: 'email',
-    description: 'Archive 管理员账号。',
+    description: {
+      en: 'Administrator accounts for the Archive.',
+      zh: 'Archive 管理员账号。',
+    },
   },
   auth: true,
   fields: [],

@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url'
 import { postgresAdapter } from '@payloadcms/db-postgres'
 import { lexicalEditor } from '@payloadcms/richtext-lexical'
 import { buildConfig } from 'payload'
+import { en } from 'payload/i18n/en'
+import { zh } from 'payload/i18n/zh'
 
 import { MAX_MEDIA_SIZE } from './archive/media-policy'
 import { r2StoragePlugin } from './archive/r2-payload-storage'
@@ -56,6 +58,10 @@ export default buildConfig({
   admin: {
     user: Users.slug,
     importMap: { baseDir: path.resolve(dirname) },
+  },
+  i18n: {
+    fallbackLanguage: 'zh',
+    supportedLanguages: { en, zh },
   },
   collections: [Users, Works, Media, WorkMedia, ArchiveSequences],
   editor: lexicalEditor(),
