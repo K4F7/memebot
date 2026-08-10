@@ -8,24 +8,32 @@ import { s3Storage } from '@payloadcms/storage-s3'
 import { buildConfig } from 'payload'
 
 import { ArchiveSequences, Media, Users, WorkMedia, Works } from './collections'
+import { databaseConnectionString } from './database-config'
 import { migrations } from './migrations'
 
 const filename = fileURLToPath(import.meta.url)
 const dirname = path.dirname(filename)
 const isProduction = process.env.NODE_ENV === 'production'
 const isBuild = process.env.PAYLOAD_BUILD === '1'
-const productionRequired = [
-  'PAYLOAD_SECRET',
-  'DATABASE_URL',
-  'R2_BUCKET',
-  'R2_ENDPOINT',
-  'R2_ACCESS_KEY_ID',
-  'R2_SECRET_ACCESS_KEY',
-  'ARCHIVE_SERVICE_TOKEN',
-  'ARCHIVE_MEDIA_SIGNING_SECRET',
-]
+const isMigration = process.env.PAYLOAD_MIGRATION === '1'
+// Vercel instances are short-lived and can scale horizontally. Schema changes
+// are applied separately with the direct Neon URL, never by a request-serving
+// instance.
+const runtimeMigrationsEnabled = process.env.VERCEL !== '1' && process.env.PAYLOAD_RUNTIME_MIGRATIONS === '1'
+const productionRequired = isMigration
+  ? ['PAYLOAD_SECRET', 'DATABASE_MIGRATION_URL']
+  : [
+      'PAYLOAD_SECRET',
+      'DATABASE_URL',
+      'R2_BUCKET',
+      'R2_ENDPOINT',
+      'R2_ACCESS_KEY_ID',
+      'R2_SECRET_ACCESS_KEY',
+      'ARCHIVE_SERVICE_TOKEN',
+      'ARCHIVE_MEDIA_SIGNING_SECRET',
+    ]
 const missingProduction = productionRequired.filter((name) => !process.env[name])
-if (isProduction && !isBuild && missingProduction.length) {
+if (isProduction && !isBuild && !isMigration && missingProduction.length) {
   throw new Error(`Missing production environment variables: ${missingProduction.join(', ')}`)
 }
 
@@ -60,13 +68,12 @@ export default buildConfig({
   typescript: { outputFile: path.resolve(dirname, 'payload-types.ts') },
   db: postgresAdapter({
     pool: {
-      connectionString: process.env.DATABASE_URL,
+      connectionString: databaseConnectionString(process.env),
     },
     migrationDir: path.resolve(dirname, 'migrations'),
-    // A long-running VPS process can apply pending migrations before Payload
-    // initializes. The deploy script only considers the release healthy after
-    // this initialization has completed.
-    prodMigrations: migrations,
+    // Keep the legacy long-running container path opt-in. Vercel deployments
+    // use the manual `yarn migrate` command instead.
+    prodMigrations: runtimeMigrationsEnabled ? migrations : undefined,
     push: !isProduction,
   }),
   logger: isProduction ? nodeLogger : undefined,
@@ -75,6 +82,11 @@ export default buildConfig({
       enabled: r2Configured,
       bucket: process.env.R2_BUCKET || 'memebot-archive',
       collections: { media: true },
+      // Vercel Functions reject request/response bodies over 4.5 MB. Let the
+      // Payload admin browser upload directly to the private R2 bucket and
+      // use short-lived S3 URLs for the default media handler.
+      clientUploads: r2Configured,
+      signedDownloads: { expiresIn: 300 },
       disableLocalStorage: isProduction,
       config: {
         credentials: {

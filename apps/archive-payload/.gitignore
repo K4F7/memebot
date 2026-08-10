@@ -12,3 +12,4 @@ src/payload-types.ts
 deploy/.current-image
 AGENTS.md
 CLAUDE.md
+.vercel/

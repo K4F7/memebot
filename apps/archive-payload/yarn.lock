@@ -4635,6 +4635,8 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "memebot-archive-payload@workspace:."
   dependencies:
+    "@aws-sdk/client-s3": "npm:^3.614.0"
+    "@aws-sdk/s3-request-presigner": "npm:^3.614.0"
     "@faceless-ui/modal": "npm:3.0.0"
     "@faceless-ui/scroll-info": "npm:2.0.0"
     "@payloadcms/db-postgres": "npm:3.82.1"
@@ -4649,6 +4651,7 @@ __metadata:
     graphql: "npm:^16.8.1"
     next: "npm:16.3.0"
     payload: "npm:3.82.1"
+    pg: "npm:8.16.3"
     react: "npm:19.2.6"
     react-dom: "npm:19.2.6"
     typescript: "npm:^5.6.2"

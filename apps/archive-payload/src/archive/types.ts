@@ -42,4 +42,5 @@ export interface ArchiveApiSource {
   getWork(id: string): Promise<ArchiveWorkDetail | undefined>
   getMedia(id: string): Promise<ArchiveMediaRecord | undefined>
   readMedia(media: ArchiveMediaRecord): Promise<ArchiveMediaBody | undefined>
+  createMediaAccessUrl?(media: ArchiveMediaRecord, expiresIn: number): Promise<string | undefined>
 }

@@ -5,6 +5,7 @@ data
 temp
 issue*.json
 /app/
+.vercel/
 
 .env
 .env.*

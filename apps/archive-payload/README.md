@@ -1,48 +1,46 @@
 # MemeBot Archive Payload
 
-This is an independent PayloadCMS application. It runs as a normal Node.js/Next.js service on
-the VPS. The Docker Compose file starts only Payload; it does not create PostgreSQL or any other
-database container.
+This is an independent PayloadCMS application. Production runs on Vercel as a Node.js/Next.js
+project rooted at this directory, with Neon PostgreSQL for metadata and the existing private
+Cloudflare R2 bucket for media. The Koishi `memebot-archive` plugin remains a read-only QQ adapter
+and keeps the `/api/archive/v1` contract.
 
 ## Local development
 
 Use Yarn from this directory:
 
 ```sh
-corepack yarn install
-DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/memebot_archive corepack yarn dev
+corepack yarn install --immutable
+DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/memebot_archive corepack yarn dev
 ```
 
-For development, `push` mode keeps a local PostgreSQL schema in sync. Production uses the checked
-in migration in `src/migrations/` and applies pending migrations during Payload startup.
+For local development, Payload uses `push` mode to keep PostgreSQL in sync. Production uses the
+checked-in files in `src/migrations/`; an empty Neon database still needs the initial schema
+migration before the first deployment.
 
-## Runtime services
+## Vercel project setup
 
-The application requires a PostgreSQL database. On the production VPS, set `DATABASE_URL` to the
-existing PostgreSQL instance. With the current 1Panel Docker network, the host is typically
-`postgresql` and the URL has this shape:
+Create or select the Vercel Project and connect the repository with Vercel Git Integration. Set the
+Vercel Project Root Directory to `apps/archive-payload`; Vercel should use the Next.js framework
+preset and deploy the production branch automatically.
 
-```text
-postgres://<user>:<password>@postgresql:5432/<database>
+The CLI link is optional for local inspection only:
+
+```sh
+cd apps/archive-payload
+vercel link
 ```
 
-The application does not create that database. Create the database and user once using the VPS's
-existing PostgreSQL administration workflow. Do not put the password in Git or in a GitHub Actions
-log.
+The generated `.vercel/` directory is ignored and must not be committed. Vercel Git Integration is
+the only production deployment entry point; GitHub Actions does not deploy this app.
 
-The public service name is `https://meme.sein.moe`. Configure 1Panel's reverse proxy to forward it
-to `http://127.0.0.1:13000`; TLS and Nginx configuration are intentionally outside this repository.
-The container continues to listen on port `3000` internally.
-
-Media files remain in a private Cloudflare R2 bucket through its S3-compatible API. Payload uses
-`@payloadcms/storage-s3`, which is the Node.js-compatible R2 integration. The API returns short-lived
-signed media URLs; the bucket is not made public.
-
-Required production variables in the VPS-only `deploy/.env` file are:
+Add the following values to the Vercel **Production** Environment. Manage them in the dashboard or
+add them one at a time with `vercel env add`; do not commit an `.env` file or attempt to import a
+complete secret file into Git.
 
 ```env
 PAYLOAD_SECRET=replace-with-a-long-random-secret
-DATABASE_URL=postgres://user:password@postgresql:5432/memebot_archive
+DATABASE_URL=postgresql://user:password@ep-example-pooler.region.aws.neon.tech/memebot_archive?sslmode=require
 R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
 R2_BUCKET=memebot-archive
 R2_REGION=auto
@@ -52,53 +50,65 @@ ARCHIVE_SERVICE_TOKEN=replace-with-a-dedicated-machine-token
 ARCHIVE_MEDIA_SIGNING_SECRET=replace-with-a-media-signing-secret
 ```
 
-## VPS deployment
+`DATABASE_URL` must be Neon’s pooled/runtime connection string. `DATABASE_MIGRATION_URL` is a
+separate direct/unpooled Neon URL used only by the one-time/manual schema migration; it is never a
+Vercel runtime variable.
 
-The server needs Docker Compose, access to the existing PostgreSQL Docker network, and a private
-GHCR login with a token that has only `read:packages`. Create the application directory and place
-the environment file there:
+After connecting the project, you can inspect the Vercel binding and environment without writing an
+`.env` file:
 
 ```sh
-mkdir -p /srv/memebot/archive-payload
-chmod 700 /srv/memebot/archive-payload
-chmod 600 /srv/memebot/archive-payload/.env
+vercel project inspect
+vercel env ls production
 ```
 
-Before approving a production deployment that includes a database migration, take the required
-PostgreSQL dump. Payload applies the checked-in migration during startup after approval; an image
-rollback never downgrades the database schema, so the previous image must remain compatible with
-the migrated schema.
+Run a read-only Neon connectivity check locally with the pooled URL (keep the URL out of shell
+history and logs):
 
-The deployment script keeps the previous image reference and restores it if the health check fails.
-The health endpoint is `GET /api/health` and is reachable locally at
-`http://127.0.0.1:13000/api/health`.
-
-The workflow is `.github/workflows/deploy-archive-payload-vps.yml`. Create a GitHub `production`
-Environment with required approval, then configure:
-
-```text
-Secrets:  VPS_SSH_KEY, VPS_KNOWN_HOSTS, GHCR_USERNAME, GHCR_READ_TOKEN
-Variables: VPS_HOST, VPS_PORT, VPS_USER, VPS_APP_DIR
+```sh
+DATABASE_URL='postgresql://…-pooler…?sslmode=require' \
+  node --input-type=module -e '
+    const { Client } = await import("pg")
+    const client = new Client({ connectionString: process.env.DATABASE_URL })
+    await client.connect()
+    console.log((await client.query("select current_database(), now()")).rows[0])
+    await client.end()
+  '
 ```
 
-`VPS_KNOWN_HOSTS` must contain the verified SSH host key, not the output of an unverified
-`ssh-keyscan`. The workflow pins its third-party actions to commit SHAs, builds an immutable image
-tagged with the commit SHA, records the registry digest, pushes it to GHCR, uploads the Compose
-files, logs the VPS into GHCR with the read-only token, and activates the digest over SSH. It does
-not provision a database.
+The R2 bucket remains private. Configure bucket CORS for the Payload/Vercel Admin origins and
+`PUT`/`GET` as required by direct uploads. Payload's S3 storage adapter uses `clientUploads` so
+large image/PDF uploads go directly from the Admin browser to R2 instead of through Vercel's
+4.5 MB Function body limit. The custom Archive media endpoint keeps its HMAC check and redirects
+to a short-lived R2 presigned GET URL, so Vercel does not proxy the media body.
 
-## Staging acceptance
+## GitHub Actions CI and initial schema
 
-The manual `.github/workflows/deploy-archive-payload-staging.yml` workflow targets an isolated VPS
-directory and a dedicated PostgreSQL database/R2 bucket. It injects a protected staging `.env`,
-deploys an immutable image with the existing health-checked rollback script, and runs the opt-in
-black-box Archive/Koishi checks before and after deployment. See
-[`docs/testing/archive-staging.md`](../../docs/testing/archive-staging.md) for the Environment
-variables, failure fixtures, and the `corepack yarn smoke:archive-staging` command.
+`.github/workflows/ci.yml` is the only automatic GitHub workflow for this app. On pull requests and
+`main`, it runs typecheck, tests, and builds for the repository and Payload app. It does not call
+Vercel, SSH, GHCR, or a VPS.
 
-The current accepted runtime is VPS + PostgreSQL + private R2 S3. The historical Workers + D1
-configuration is not part of this app and must not be reintroduced without a new architecture
-decision.
+Before the first Vercel deployment, run the checked-in Payload schema migration once against Neon’s
+direct/unpooled URL. The database is empty, so this is schema bootstrap rather than a data
+migration. The migration command intentionally needs only `PAYLOAD_SECRET` and the direct
+`DATABASE_MIGRATION_URL`:
+
+```sh
+PAYLOAD_SECRET='set-through-a-secret-manager' \
+DATABASE_MIGRATION_URL='postgresql://…direct…?sslmode=require' \
+  corepack yarn migrate
+```
+
+Do not put `DATABASE_MIGRATION_URL` in Vercel Runtime Environment. Vercel instances do not run
+migrations during startup, and a deployment rollback does not downgrade the Neon schema. Because
+this project currently has no production data, no data migration or legacy compatibility step is
+part of the rollout.
+
+## Legacy local container files
+
+`Dockerfile` and `deploy/compose.yml` are retained for local or manual compatibility only. The old
+VPS, SSH, GHCR, staging, and CLI deployment workflows have been retired; they are not a supported
+release path.
 
 ## Commands
 
@@ -108,6 +118,3 @@ corepack yarn test
 corepack yarn build
 corepack yarn payload migrate:create archive-postgres-change
 ```
-
-For production, run migrations through the application startup path and back up PostgreSQL before
-deploying schema changes. Do not automatically downgrade migrations during an application rollback.

@@ -8,7 +8,7 @@ The team has no production Archive data to migrate. We can therefore introduce a
 
 ## Solution
 
-Deploy an independent PayloadCMS application as a self-hosted Node.js/Next.js service on the VPS, using the existing PostgreSQL service for Archive metadata and a private Cloudflare R2 bucket for Media Items through its S3-compatible API. The public service name is `meme.sein.moe`; 1Panel owns TLS and reverse-proxy configuration and forwards to `127.0.0.1:13000`, while the container listens on `3000` and the repository only binds that loopback port. GitHub Actions builds an immutable container image and deploys it to the VPS. Payload's authenticated Admin UI is the only Archive management surface in the MVP.
+Deploy an independent PayloadCMS application as a Node.js/Next.js project on Vercel, using Neon PostgreSQL for Archive metadata and a private Cloudflare R2 bucket for Media Items through its S3-compatible API. The public service name is `meme.sein.moe` (or the configured Vercel custom domain). Vercel Git Integration automatically builds and deploys the connected production branch; GitHub Actions is limited to repository typecheck, test, and build checks. Payload's authenticated Admin UI is the only Archive management surface in the MVP.
 
 Expose a stable `/api/archive/v1` read contract from Payload. The Koishi `memebot-archive` plugin authenticates as a machine client, searches Works through that contract, and retrieves short-lived protected media access for QQ delivery. A completed Work and Media relationship is immediately readable; the MVP has no draft/published state.
 
@@ -57,7 +57,7 @@ The first vertical slice covers Works and ordered image/PDF Media Items. Paper/N
 ## Implementation Decisions
 
 - The highest seam is the Payload `/api/archive/v1` boundary. Payload owns content writes and protected media access; Koishi owns only QQ search, retrieval, and delivery behavior. Tests should cross this seam rather than couple directly to Payload collection internals.
-- The Payload application is an independent deployable project. It targets a self-hosted Node.js/Next.js runtime with the VPS's existing PostgreSQL service and a private R2 bucket accessed through the S3 API. The public name is `meme.sein.moe`; 1Panel terminates TLS and owns the reverse proxy, while the application remains loopback-bound. The application uses Payload's authenticated Admin UI, Users collection, and default collection administration behavior.
+- The Payload application is an independent deployable project rooted at `apps/archive-payload`. It targets Vercel's Node.js/Next.js runtime with Neon PostgreSQL and a private R2 bucket accessed through the S3 API. The application uses Payload's authenticated Admin UI, Users collection, and default collection administration behavior. Vercel Git Integration owns production deployment; GitHub Actions does not deploy the app.
 - PostgreSQL is the source of truth for Work metadata and WorkMedia relationships. R2 is the source of truth for Media Item bytes. The Koishi plugin does not maintain a second Archive write model, local attachment copy, or Console management surface.
 - A Work has title, author, optional description, a stable `W<n>` Archive Identifier, and at least one WorkMedia relationship. Paper/Newspaper Issue keeps its separate `P<n>`/PDF model for the later Paper slice.
 - A Media Item is a Payload-managed file initially restricted to image and PDF media types. Audio, video, HTML/SVG, arbitrary files, derived previews, and ZIP packaging are outside this MVP.
@@ -71,8 +71,8 @@ The first vertical slice covers Works and ordered image/PDF Media Items. Paper/N
 - The Koishi public surface keeps read-only search and retrieval. Multi-item Work delivery sends the details plus ordered media as one or more QQ merged-forward messages, reporting per-item failures. QQ-side publishing, editing, removal, restore, backup retry, and other administrative writes are not part of this boundary.
 - The existing Archive-specific `memebot-access` runtime dependency is removed because this slice has no protected QQ writes. The global Access architecture remains applicable to any future plugin operation that becomes protected.
 - The old local-first attachment model, Koishi metadata tables, Console WebUI, ZIP Work Package, Archive manifest, automated backup queue, restore queue, 30-day lifecycle, and ZIP-derived preview are not reimplemented in this MVP. The accepted v2 ADRs record these as superseded or explicitly deferred.
-- No production migration is planned. The implementation may choose clean Payload IDs and fresh R2 object keys for media while preserving only the new public `W<n>` business identifier contract.
-- A production release that contains a schema migration requires a PostgreSQL dump before the protected Environment approval. Payload applies the migration during startup after approval; an image rollback never downgrades the database, so the previous image must remain compatible with the new schema.
+- No production data migration is planned. The implementation may choose clean Payload IDs and fresh R2 object keys for media while preserving only the new public `W<n>` business identifier contract; the empty database still receives the initial Payload schema migration during deployment.
+- The empty production database still needs the checked-in Payload schema migration. An operator runs it manually with a direct/unpooled Neon `DATABASE_MIGRATION_URL`; that URL is never a Vercel Runtime Environment variable, and Vercel request-serving instances never apply migrations. No legacy data migration or compatibility layer is required, and a deployment rollback never downgrades the database schema.
 
 ## Testing Decisions
 
@@ -81,7 +81,7 @@ The first vertical slice covers Works and ordered image/PDF Media Items. Paper/N
 - API contract tests cover machine authentication, canonical search and detail response shapes, exact totals with the 1000-item cap, unique contiguous media order, duplicate display filenames, private-media access behavior, withdrawn media exclusion, hidden all-withdrawn Works, missing R2 objects, expired/invalid credentials, and clear unavailable responses.
 - Koishi adapter tests use the existing Koishi test harness style with a fake HTTP Payload boundary. They cover search, direct Work lookup, ordered merged-forward delivery, PDF/image handling, per-item fetch failure, and API-unavailable messaging.
 - Browser acceptance tests cover the Payload Admin path for creating a Work, assigning every Media Item to it, attaching multiple WorkMedia relationships, system-normalizing their order, withdrawing an erroneous Media Item, observing the saved result, and confirming that physical deletion is unavailable. They should verify user-visible behavior rather than Payload component structure.
-- A VPS staging smoke test may exercise the existing PostgreSQL service, R2 S3 access, and signed media access without placing credentials in the repository or normal test logs. It is supplemental to deterministic tests and is not required for default local runs.
+- A manually run Vercel preview/production smoke test may exercise Neon PostgreSQL, R2 S3 access, direct client upload, and signed media access without placing credentials in the repository or normal test logs. It is supplemental to deterministic tests and is not required for default local runs.
 - Repository verification should retain the existing typecheck/build/test conventions for the Koishi packages, plus the Payload project's own typecheck/build and API integration checks.
 
 ## Out of Scope
@@ -99,6 +99,6 @@ The first vertical slice covers Works and ordered image/PDF Media Items. Paper/N
 
 ## Further Notes
 
-- The shared glossary now defines Work, Media Item, WorkMedia Relationship, Archive Identifier, and Archive Read Contract. Archive v2 decisions are recorded in ADR 0011 through ADR 0015; ADR 0001, ADR 0005, ADR 0007, and ADR 0008 are marked superseded.
-- Before implementing the full Archive surface, the Work vertical slice should prove the VPS + PostgreSQL + R2 S3 deployment path, the machine-authenticated API seam, and QQ merged-forward delivery.
+- The shared glossary now defines Work, Media Item, WorkMedia Relationship, Archive Identifier, and Archive Read Contract. Archive v2 decisions are recorded in ADR 0011 through ADR 0016; ADR 0001, ADR 0005, ADR 0007, and ADR 0008 are marked superseded.
+- Before implementing the full Archive surface, the Work vertical slice should prove the Vercel + Neon PostgreSQL + R2 S3 deployment path, the machine-authenticated API seam, and QQ merged-forward delivery.
 - The absence of production data is a deliberate part of this decision. If production data appears before implementation is complete, stop and add a migration/compatibility decision before changing the model.

@@ -82,6 +82,17 @@ export async function handleArchiveApi(
       }
       const media = await source.getMedia(mediaId)
       if (!media) throw new ArchiveApiError('not-found', 'Media 不存在。', 404)
+      const expiresIn = Math.max(1, expires - Math.floor(now / 1000))
+      const signedUrl = await source.createMediaAccessUrl?.(media, expiresIn)
+      if (signedUrl) {
+        return new Response(null, {
+          status: 302,
+          headers: {
+            'cache-control': `private, max-age=${expiresIn}`,
+            location: signedUrl,
+          },
+        })
+      }
       const body = await source.readMedia(media)
       if (!body) throw new ArchiveApiError('not-found', 'Media 对象不存在。', 404)
       return new Response(body.body, {

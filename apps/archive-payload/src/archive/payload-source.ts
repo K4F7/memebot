@@ -8,10 +8,15 @@ type PayloadLike = {
 
 type R2Like = {
   get(key: string): Promise<{ body?: ReadableStream<Uint8Array>; size?: number; httpMetadata?: { contentType?: string } } | null | undefined>
+  presignGet?(key: string, expiresIn: number): Promise<string>
 }
 
 function safeFilename(filename: string): string {
   return filename.replace(/\\/g, '/').split('/').pop()!.replace(/[\r\n]/g, '_')
+}
+
+export function mediaObjectKey(media: Pick<ArchiveMediaRecord, 'prefix' | 'filename'>): string {
+  return [media.prefix?.replace(/^\/+|\/+$/g, ''), safeFilename(media.filename)].filter(Boolean).join('/')
 }
 
 export class PayloadArchiveSource implements ArchiveApiSource {
@@ -100,7 +105,7 @@ export class PayloadArchiveSource implements ArchiveApiSource {
   }
 
   async readMedia(media: ArchiveMediaRecord): Promise<ArchiveMediaBody | undefined> {
-    const key = [media.prefix?.replace(/^\/+|\/+$/g, ''), safeFilename(media.filename)].filter(Boolean).join('/')
+    const key = mediaObjectKey(media)
     const object = await this.bucket.get(key)
     if (!object?.body) return undefined
     return {
@@ -109,5 +114,9 @@ export class PayloadArchiveSource implements ArchiveApiSource {
       filename: media.filename,
       size: object.size || media.size,
     }
+  }
+
+  async createMediaAccessUrl(media: ArchiveMediaRecord, expiresIn: number): Promise<string | undefined> {
+    return this.bucket.presignGet?.(mediaObjectKey(media), expiresIn)
   }
 }

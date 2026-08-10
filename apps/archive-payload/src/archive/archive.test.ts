@@ -3,6 +3,12 @@ import { describe, expect, it } from 'vitest'
 import { handleArchiveApi } from './api'
 import { InMemoryArchiveStore } from './store'
 
+class PresignedArchiveStore extends InMemoryArchiveStore {
+  async createMediaAccessUrl(media: { id: string }, expiresIn: number): Promise<string> {
+    return `https://r2.example.test/${media.id}?expires=${expiresIn}`
+  }
+}
+
 const now = 1_700_000_000_000
 const options = { serviceToken: 'machine-secret', signingSecret: 'signing-secret', now: () => now, mediaTtlSeconds: 60 }
 
@@ -51,5 +57,24 @@ describe('Archive Work media contract', () => {
     const expired = new URL(body.data.media[0].access.url)
     expired.searchParams.set('expires', String(Math.floor(now / 1000) - 1))
     expect((await handleArchiveApi(new Request(expired), store, options)).status).toBe(401)
+  })
+
+  it('redirects protected media to a presigned object URL when available', async () => {
+    const store = new PresignedArchiveStore()
+    const work = store.createWork({ title: 'Work', author: 'Author' })
+    const media = store.createMedia({ workId: work.archiveId, filename: 'one.pdf', contentType: 'application/pdf', bytes: new Uint8Array([1]) })
+    store.createWorkMedia({ workId: work.archiveId, mediaId: media.id, displayOrder: 0 })
+
+    const detail = await handleArchiveApi(
+      new Request('https://archive.test/api/archive/v1/works/W1', { headers: { authorization: 'Bearer machine-secret' } }),
+      store,
+      options,
+    )
+    const body = await detail.json() as any
+    const mediaResponse = await handleArchiveApi(new Request(body.data.media[0].access.url), store, options)
+
+    expect(mediaResponse.status).toBe(302)
+    expect(mediaResponse.headers.get('location')).toBe('https://r2.example.test/media-1?expires=60')
+    expect(mediaResponse.headers.get('cache-control')).toBe('private, max-age=60')
   })
 })

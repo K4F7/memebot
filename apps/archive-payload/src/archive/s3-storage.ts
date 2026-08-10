@@ -1,4 +1,5 @@
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3'
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { Readable } from 'node:stream'
 
 export interface ObjectStoreObject {
@@ -9,6 +10,7 @@ export interface ObjectStoreObject {
 
 export interface ObjectStore {
   get(key: string): Promise<ObjectStoreObject | null>
+  presignGet(key: string, expiresIn: number): Promise<string>
 }
 
 let cached: { endpoint: string; bucket: string; client: S3Client } | undefined
@@ -58,6 +60,11 @@ export function createR2ObjectStore(): ObjectStore | undefined {
         if (name === 'NoSuchKey' || name === 'NotFound') return null
         throw error
       }
+    },
+    async presignGet(key, expiresIn) {
+      return getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: key }), {
+        expiresIn: Math.max(1, Math.min(300, Math.floor(expiresIn))),
+      })
     },
   }
 }
