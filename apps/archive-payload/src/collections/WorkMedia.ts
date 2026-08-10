@@ -70,8 +70,8 @@ export const WorkMedia: CollectionConfig = {
   },
   access: {
     read: ({ req }) => Boolean(req.user),
-    create: ({ req }) => Boolean(req.user),
-    update: ({ req }) => Boolean(req.user),
+    create: ({ req }) => Boolean(req.user && (req as any).context?.workAuthoring),
+    update: ({ req }) => Boolean(req.user && (req as any).context?.workAuthoring),
     delete: () => false,
   },
   hooks: {

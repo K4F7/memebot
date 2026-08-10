@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+
 import type { CollectionConfig } from 'payload'
 import { sql } from '@payloadcms/db-postgres'
 
@@ -29,6 +31,10 @@ async function allocateArchiveIdentifier(req: any): Promise<string> {
 
 export const Works: CollectionConfig = {
   slug: 'works',
+  versions: {
+    drafts: { validate: true },
+    maxPerDoc: 0,
+  },
   labels: {
     singular: { en: 'Work', zh: '作品' },
     plural: { en: 'Works', zh: '作品' },
@@ -38,8 +44,8 @@ export const Works: CollectionConfig = {
     useAsTitle: 'title',
     defaultColumns: ['archiveId', 'title', 'author', 'updatedAt'],
     description: {
-      en: 'Archived works. Edit through the unified Work media editor; publication is explicit.',
-      zh: '档案作品。请通过统一的作品编辑页管理媒体文件；发布需显式操作。',
+      en: 'Archived works. Only an explicitly published, complete media manifest is readable.',
+      zh: '档案作品。只有显式发布且媒体清单完整的版本可读。',
     },
     components: {
       views: {
@@ -54,8 +60,8 @@ export const Works: CollectionConfig = {
   },
   access: {
     read: ({ req }) => Boolean(req.user),
-    create: ({ req }) => Boolean(req.user),
-    update: ({ req }) => Boolean(req.user),
+    create: ({ req }) => Boolean(req.user && (req as any).context?.workAuthoring),
+    update: ({ req }) => Boolean(req.user && (req as any).context?.workAuthoring),
     delete: () => false,
   },
   hooks: {
@@ -70,6 +76,8 @@ export const Works: CollectionConfig = {
       next.author = String(next.author || '').trim()
       if (!next.title || !next.author) throw new Error('Work 标题和作者不能为空。')
       if (next.description !== undefined) next.description = String(next.description).trim() || undefined
+      if (!next.revision) next.revision = `rev_${randomUUID()}`
+      if (!Array.isArray(next.mediaManifest)) next.mediaManifest = []
       return next
     }],
   },
@@ -92,6 +100,27 @@ export const Works: CollectionConfig = {
     { name: 'title', type: 'text', required: true, label: { en: 'Title', zh: '标题' } },
     { name: 'author', type: 'text', required: true, label: { en: 'Author', zh: '作者' } },
     { name: 'description', type: 'textarea', label: { en: 'Description', zh: '描述' } },
+    {
+      name: 'revision',
+      type: 'text',
+      required: true,
+      admin: { hidden: true, readOnly: true },
+    },
+    {
+      name: 'mediaManifest',
+      type: 'json',
+      required: true,
+      defaultValue: [],
+      admin: {
+        hidden: true,
+        description: 'Versioned ordered WorkMedia presentation manifest.',
+      },
+    },
+    {
+      name: 'publishedAt',
+      type: 'date',
+      admin: { hidden: true, readOnly: true },
+    },
   ],
 }
 

@@ -113,8 +113,9 @@ Media 是唯一内容权威。
 
 Payload 通过 `GET /api/archive/v1/works?query=&author=` 搜索 Work，通过
 `GET /api/archive/v1/works/:archiveId` 获取详情，并为每个图片/PDF Media 返回短期签名
-访问。Work 只有在存在有效 WorkMedia Relationship 时才可读；Media 按 Payload 中的
-display order 投递，单个 Media 失败不会隐藏其他项。
+访问。Work 只有在管理员显式发布完整版本，且发布快照包含至少一个指向未撤回 Media 的
+有效 WorkMedia manifest 后才可读；草稿和未发布编辑不会出现在读 API。Media 按发布快照
+中的顺序投递，单个 Media 失败不会隐藏其他项。
 
 ### QQ 只读命令
 
@@ -167,7 +168,9 @@ yarn start
 
 在 Sandbox 中分别以成员和 Plugin Administrator 身份走通 Access、Intake、FAQ 与 Activity
 命令；Archive 的 QQ 验收只覆盖 Payload Work 搜索、详情和 Media 投递。Payload Admin 的
-Work、Media、WorkMedia、顺序、撤回和删除权限验收在 `apps/archive-payload/` 独立执行。
+统一 Work 编辑器验收覆盖草稿保存、显式发布、发布后编辑隔离、失败发布保留旧版本和可重试
+草稿，以及 Media 顺序、撤回、草稿媒体清理和禁止已发布媒体物理删除；这些检查在
+`apps/archive-payload/` 独立执行。
 `app/` 的配置、数据库、日志、缓存、环境文件和依赖均不得提交或发布。
 `yarn smoke:local-app` 会先校验五个本地依赖与必需服务配置，再启动实例、探测 Console，
 并把启动日志中的可见失败作为非零退出；缺失 `app/`、端口被占用或服务不可用都不是成功。

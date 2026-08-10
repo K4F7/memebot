@@ -4,9 +4,13 @@ The former Koishi Archive Console browser suite is retired. The `memebot-archive
 longer ships a Console entry, management listeners, Vue client, or browser test command.
 
 Archive administration is exercised in the independent Payload application under
-`apps/archive-payload/`. Its current acceptance boundary is Payload Admin creating a Work,
-assigning image/PDF Media, creating ordered WorkMedia relationships, withdrawing Media, and
-confirming that physical deletion is unavailable.
+`apps/archive-payload/`. Its current acceptance boundary is the unified Work editor creating and
+saving a draft, direct-uploading image/PDF Media in selection order, explicitly publishing a
+complete aggregate, verifying that drafts remain absent from the Archive Read Contract, editing a
+Published Work without changing the current public snapshot, discarding a never-published draft
+Media item, withdrawing published Media, and confirming that published physical deletion is
+unavailable. A failed publish must leave both the previous publication and the retryable draft
+unchanged.
 
 The Koishi package only needs deterministic API/adapter tests and QQ read smoke tests:
 

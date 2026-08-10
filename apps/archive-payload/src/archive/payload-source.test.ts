@@ -47,4 +47,31 @@ describe('PayloadArchiveSource media storage seam', () => {
 
     await expect(source.getMedia('media-1')).resolves.toBeUndefined()
   })
+
+  it('reads the published ordered manifest instead of live WorkMedia rows', async () => {
+    const find = vi.fn()
+      .mockResolvedValueOnce({ docs: [{ id: 1, archiveId: 'W1', title: 'Published', author: 'Author', _status: 'published', mediaManifest: [{ mediaId: '11', filename: 'cover.png', caption: 'Cover' }] }] })
+      .mockResolvedValueOnce({ docs: [{ id: 11, work: 1, filename: 'draft-name.png', mimeType: 'image/png', filesize: 12, storageKey: 'media/11111111-1111-4111-8111-111111111111', uploadStatus: 'finalized' }] })
+    const source = new PayloadArchiveSource(
+      { find, findByID: vi.fn() },
+      { get: vi.fn() },
+    )
+
+    await expect(source.getWork('W1')).resolves.toMatchObject({
+      id: 'W1',
+      media: [{ id: '11', filename: 'cover.png', caption: 'Cover' }],
+    })
+    expect(find.mock.calls[0][0]).toMatchObject({ draft: false })
+  })
+
+  it('hides draft-only Media even when its storage key is valid', async () => {
+    const findByID = vi.fn()
+      .mockResolvedValueOnce({ id: 'media-1', work: 'work-1', filename: 'draft.png', mimeType: 'image/png', filesize: 1, storageKey: 'media/11111111-1111-4111-8111-111111111111', uploadStatus: 'finalized' })
+      .mockResolvedValueOnce({ id: 'work-1', _status: 'draft', mediaManifest: [{ mediaId: 'media-1', filename: 'draft.png' }] })
+    const source = new PayloadArchiveSource(
+      { find: vi.fn(), findByID },
+      { get: vi.fn() },
+    )
+    await expect(source.getMedia('media-1')).resolves.toBeUndefined()
+  })
 })

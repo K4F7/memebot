@@ -22,8 +22,8 @@ export const Media: CollectionConfig = {
   },
   access: {
     read: ({ req }) => Boolean(req.user),
-    create: ({ req }) => Boolean(req.user),
-    update: ({ req }) => Boolean(req.user),
+    create: ({ req }) => Boolean(req.user && (req as any).context?.workAuthoring),
+    update: ({ req }) => Boolean(req.user && (req as any).context?.workAuthoring),
     // MVP keeps media records auditable; withdrawing a Work/Media item is a
     // metadata operation and must not physically delete the R2 object.
     delete: () => false,
@@ -62,6 +62,7 @@ export const Media: CollectionConfig = {
       if (mimeType) validateMediaMimeType(mimeType)
       const size = Number((req.file as any)?.size || (data as any)?.filesize || 0)
       if (size > MAX_MEDIA_SIZE) throw new Error('Media 文件不能超过 100 MB。')
+      if (!(data as any)?.uploadStatus) (data as any).uploadStatus = (req as any).context?.workAuthoring ? 'pending' : 'finalized'
       return ensureMediaStorageKey({
         data: data as Record<string, any> | undefined,
         originalDoc: originalDoc as Record<string, any> | undefined,
@@ -112,5 +113,21 @@ export const Media: CollectionConfig = {
         },
       },
     },
+    {
+      name: 'uploadStatus',
+      type: 'select',
+      required: true,
+      defaultValue: 'finalized',
+      options: [
+        { label: 'Pending', value: 'pending' },
+        { label: 'Finalized', value: 'finalized' },
+      ],
+      admin: { hidden: true },
+    },
+    { name: 'uploadId', type: 'text', admin: { hidden: true, readOnly: true } },
+    { name: 'idempotencyKey', type: 'text', admin: { hidden: true, readOnly: true } },
+    { name: 'contentFingerprint', type: 'text', admin: { hidden: true, readOnly: true } },
+    { name: 'replaceMediaId', type: 'text', admin: { hidden: true, readOnly: true } },
+    { name: 'selectionIndex', type: 'number', admin: { hidden: true, readOnly: true } },
   ],
 }

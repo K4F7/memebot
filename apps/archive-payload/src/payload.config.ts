@@ -10,7 +10,7 @@ import { zh } from 'payload/i18n/zh'
 
 import { MAX_MEDIA_SIZE } from './archive/media-policy'
 import { r2StoragePlugin } from './archive/r2-payload-storage'
-import { ArchiveSequences, Media, Users, WorkMedia, Works } from './collections'
+import { ArchiveSequences, Media, MediaCleanup, Users, WorkMedia, Works } from './collections'
 import { databaseConnectionString } from './database-config'
 import { migrations } from './migrations'
 
@@ -63,7 +63,7 @@ export default buildConfig({
     fallbackLanguage: 'zh',
     supportedLanguages: { en, zh },
   },
-  collections: [Users, Works, Media, WorkMedia, ArchiveSequences],
+  collections: [Users, Works, Media, WorkMedia, MediaCleanup, ArchiveSequences],
   editor: lexicalEditor(),
   upload: {
     limits: { fileSize: MAX_MEDIA_SIZE },

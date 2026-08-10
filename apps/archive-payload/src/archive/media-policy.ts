@@ -16,6 +16,9 @@ export interface UploadContext {
   mimeType: string
   expiresAt: number
   signature: string
+  /** Authoring-only binding; absent for the legacy Payload upload endpoint. */
+  workId?: string
+  uploadId?: string
 }
 
 interface UploadContextInput {
@@ -23,6 +26,8 @@ interface UploadContextInput {
   filesize: number
   mimeType: string
   storageKey: string
+  workId?: string
+  uploadId?: string
 }
 
 interface ContextOptions {
@@ -41,7 +46,7 @@ interface MediaRequestFile {
 interface StorageKeyRequest {
   data?: Record<string, any>
   originalDoc?: Record<string, any>
-  req: { file?: MediaRequestFile }
+  req: { file?: MediaRequestFile; context?: Record<string, unknown> }
 }
 
 function contextSecret(secret?: string): string {
@@ -59,6 +64,8 @@ function canonicalContext(input: Omit<UploadContext, 'signature'>): string {
     input.filesize,
     input.mimeType,
     input.expiresAt,
+    input.workId || '',
+    input.uploadId || '',
   ].join('\n')
 }
 
@@ -97,6 +104,8 @@ export function createUploadContext(input: UploadContextInput, options: ContextO
     filesize: validated.filesize,
     mimeType: validated.mimeType,
     expiresAt,
+    workId: input.workId,
+    uploadId: input.uploadId,
   }
   return { ...unsigned, signature: signContext(unsigned, contextSecret(options.secret)) }
 }
@@ -114,6 +123,8 @@ export function verifyUploadContext(value: unknown, options: ContextOptions = {}
     typeof candidate.expiresAt !== 'number' ||
     typeof candidate.signature !== 'string'
   ) return null
+  if (candidate.workId !== undefined && typeof candidate.workId !== 'string') return null
+  if (candidate.uploadId !== undefined && typeof candidate.uploadId !== 'string') return null
 
   let validated: ReturnType<typeof validateMediaUpload>
   try {
@@ -161,7 +172,10 @@ export function ensureMediaStorageKey({ data, originalDoc, req }: StorageKeyRequ
     data.storageKey = originalDoc.storageKey
   } else if (data.storageKey && !isStorageKey(data.storageKey)) {
     throw new Error('Media storage key 无效。')
-  } else if (!originalDoc && data.storageKey) {
+  } else if (!originalDoc && data.storageKey && !req.context?.workAuthoring) {
+    // The Work Authoring service allocates the opaque key before creating the
+    // pending Media row. The context flag is attached only to an authenticated
+    // internal Payload request, never accepted from a browser collection write.
     throw new Error('Media storage key 必须由服务器随上传生成。')
   }
   return data

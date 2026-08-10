@@ -86,6 +86,16 @@ objects. The canonical Archive media endpoint keeps its HMAC check and redirects
 R2 presigned GET URL, so Vercel does not proxy the media body. The separate authenticated Payload
 Admin preview endpoint resolves the Media ID to the same presigned URL.
 
+## Work authoring lifecycle
+
+The Work editor uses the authenticated `/api/work-authoring/v1` aggregate API. It creates and saves
+versioned drafts, registers direct-to-R2 uploads, and submits the complete ordered Media manifest
+with an opaque revision token. A Work remains absent from `/api/archive/v1` until an explicit
+publish succeeds. Publishing validates the full aggregate and promotes metadata plus the
+published manifest in one PostgreSQL transaction; a stale revision or failed publish leaves the
+current public snapshot and retryable draft unchanged. Published media bytes remain immutable, and
+removing a never-published draft item records an idempotent R2 cleanup intent.
+
 Preview deployments are build-only until a separate, isolated Neon/R2 environment is provisioned.
 Do not copy Production credentials into Preview. Runtime smoke tests and Admin uploads are
 Production-only for this rollout.
