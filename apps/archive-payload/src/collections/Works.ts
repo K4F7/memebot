@@ -29,9 +29,15 @@ async function allocateArchiveIdentifier(req: any): Promise<string> {
 
 export const Works: CollectionConfig = {
   slug: 'works',
+  labels: {
+    singular: 'Work',
+    plural: 'Works',
+  },
   admin: {
+    group: '档案管理',
     useAsTitle: 'title',
     defaultColumns: ['archiveId', 'title', 'author', 'updatedAt'],
+    description: '档案作品。可读性取决于是否存在指向未撤回 Media 的 WorkMedia。',
   },
   access: {
     read: ({ req }) => Boolean(req.user),

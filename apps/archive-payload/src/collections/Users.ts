@@ -2,7 +2,15 @@ import type { CollectionConfig } from 'payload'
 
 export const Users: CollectionConfig = {
   slug: 'users',
-  admin: { useAsTitle: 'email' },
+  labels: {
+    singular: '用户',
+    plural: '用户',
+  },
+  admin: {
+    group: '系统管理',
+    useAsTitle: 'email',
+    description: 'Archive 管理员账号。',
+  },
   auth: true,
   fields: [],
   access: {

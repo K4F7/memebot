@@ -55,7 +55,16 @@ async function normalizeWorkMediaOrder(req: any, workId: string, relationshipId:
 
 export const WorkMedia: CollectionConfig = {
   slug: 'work-media',
-  admin: { useAsTitle: 'id', defaultColumns: ['work', 'media', 'displayOrder', 'caption'] },
+  labels: {
+    singular: 'WorkMedia',
+    plural: 'WorkMedia',
+  },
+  admin: {
+    group: '档案管理',
+    useAsTitle: 'id',
+    defaultColumns: ['work', 'media', 'displayOrder', 'caption'],
+    description: 'Work 的媒体呈现关系，承载显示顺序与可选 caption。',
+  },
   access: {
     read: ({ req }) => Boolean(req.user),
     create: ({ req }) => Boolean(req.user),

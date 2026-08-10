@@ -56,6 +56,20 @@ export default buildConfig({
   admin: {
     user: Users.slug,
     importMap: { baseDir: path.resolve(dirname) },
+    meta: {
+      titleSuffix: ' · MemeBot 档案管理',
+    },
+    components: {
+      graphics: {
+        Logo: '/admin/graphics/Logo',
+        Icon: '/admin/graphics/Icon',
+      },
+      views: {
+        dashboard: {
+          Component: '/admin/Dashboard',
+        },
+      },
+    },
   },
   collections: [Users, Works, Media, WorkMedia, ArchiveSequences],
   editor: lexicalEditor(),
