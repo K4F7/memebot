@@ -13,9 +13,10 @@ Access 本身不依赖任何业务插件，业务插件之间也不互相依赖�
 | `koishi-plugin-memebot-intake` | 为投稿、反馈、建议分别配置 QQ Notification Group/用户目标和附件目录 | 在 QQ 中开始收集并连续发送文字或附件 | 保存 Intake Draft，提交后生成稳定编号并投递管理通知；失败通知自动重试 | 引用管理通知认领、转交、变更状态、关闭或重开 | 用户获得 `投稿#N`、`反馈#N` 或 `建议#N`，并可查询自己的记录 |
 | `koishi-plugin-memebot-faq` | 配置公开列表页大小，并加载 Access | 在 QQ 中分页浏览或按 `#N` 查询 | 只向普通成员展示公开条目 | 新增、编辑、隐藏、重新公开；已隐藏条目才可永久删除 | 用户看到稳定的 FAQ 编号、问题和答案 |
 | `koishi-plugin-memebot-activity` | 配置 QQ 用户/Notification Group 通知目标，并加载 Access | 在 QQ 中查看近期活动或按 `#N` 查询 | 根据开始、结束时间计算近期与历史状态 | 引导新增、编辑、取消，并选择仅保存或同时通知 | 用户看到活动时间、状态、地点、描述和链接；被选中的 QQ 目标收到通知 |
-| `koishi-plugin-memebot-archive` | 配置本地目录、PDF/ZIP 上限及可选 R2；同时提供 Database 和 Console | 在 QQ 中搜索或按 `P<N>`、`W<N>` 获取归档 | 元数据写入 Koishi Database，附件本地优先保存，R2 作为可重试备份 | QQ 命令用于常用快捷操作；Archive WebUI 完成发布、预览、关联、恢复和生命周期管理 | 用户获得 Paper PDF 或 Work ZIP；管理员可观察预检、备份、恢复和审计状态 |
+| `koishi-plugin-memebot-archive` | 配置 Payload Archive URL、machine credential 和请求超时 | 在 QQ 中搜索或按 `W<N>` 获取 Work | 通过版本化 Payload API 读取有序图片/PDF Media，使用短期签名访问 | Payload Admin 是唯一 Archive 管理入口；QQ 不提供写入或运维命令 | 用户获得 Work 详情与有序 Media；Payload 负责内容管理和私有对象 |
 
-Access 为四个业务插件提供同一套授权规则。显式记录的 QQ 用户或 Koishi authority 不低于
+Access 为三个受保护业务插件提供同一套授权规则；Archive v2 仅提供 Payload 公开读取，
+不属于 Access 的运行时消费者。显式记录的 QQ 用户或 Koishi authority 不低于
 4 的用户是 Plugin Administrator。Management Group 只限制群聊中的状态变更位置，不会
 把群成员变成管理员；管理员只读不受位置限制，私聊状态变更仍要求管理员身份，空
 Management Group 集合拒绝所有群聊状态变更。Notification Group 仍由对应业务插件配置，
@@ -99,53 +100,31 @@ QQ 联系提交者，Bot 不承载管理员与提交者之间的回复会话。
 
 ## Archive
 
-Archive 必须同时获得 Koishi Database 和 Console 服务。领域词汇 **Newspaper Issue**
-在 QQ 命令中显示为 **Paper**，在 Archive WebUI 中显示为 **报纸期数**；下文使用
-Paper 时均指同一概念。主要配置：
+Archive v2 由独立的 Payload 应用管理内容，`memebot-archive` 只是 QQ 的只读适配器。
+它不注入 Koishi Database、Console 或 `memebot-access`，也不创建 Archive 表、写入本地
+附件、上传 ZIP、维护清单或执行生命周期操作。Payload 的 PostgreSQL 元数据和私有 R2
+Media 是唯一内容权威。
 
-- `localPath`：主附件目录，默认 `data/memebot-archive`。
-- `paperMaxMb`、`workMaxMb`：Paper PDF 和 Work ZIP 上限，默认 100 MB、500 MB。
-- `r2.enabled` 及 `accountId`、`bucketName`、`accessKeyId`、`secretAccessKey`、
-  `objectPrefix`：可选的 Cloudflare R2 S3 API 备份。启用后凭据必须完整。
+主要配置位于插件的 `payload` 对象：
 
-Paper 使用 `P<自然数>`，Work 使用 `W<自然数>`；Archive Identifier 在移除、恢复和
-取回期间保持不变且不会复用。每个 Paper 的附件是一个 PDF，每个 Work 必须有且只有
-一个 ZIP Work Package。Publication Appearance 显式连接 Paper 与 Work，并可记录页码、
-栏目和显示顺序。
+- `payload.baseUrl`：Payload 站点根 URL，或 `/api/archive/v1` API 根 URL。
+- `payload.serviceToken`：专用 machine credential；不是 Payload 管理员 cookie/JWT。
+- `payload.timeoutMs`：远程请求超时，默认 10 秒。
 
-### QQ 快捷命令
+Payload 通过 `GET /api/archive/v1/works?query=&author=` 搜索 Work，通过
+`GET /api/archive/v1/works/:archiveId` 获取详情，并为每个图片/PDF Media 返回短期签名
+访问。Work 只有在存在有效 WorkMedia Relationship 时才可读；Media 按 Payload 中的
+display order 投递，单个 Media 失败不会隐藏其他项。
 
-成员可用 `/archive.search paper [查询]`、`/archive.search works [查询]` 搜索，或使用
-`/archive P1`、`/archive W1` 获取详情与附件。管理员常用快捷命令包括：
+### QQ 只读命令
 
-- `/archive.publish.paper`、`/archive.publish.works`：引导上传并发布 PDF/ZIP。
-- `/archive.edit.paper P1`：引导编辑 Paper 元数据。
-- `/archive.rm P1` 或 `/archive.rm W1`：预览后软删除。
-- `/archive.retry`：立即重试待同步的 R2 附件。
+- `/archive.search works [查询]`：搜索 Work。
+- `/archive.works [查询]`：搜索 Work 的兼容快捷写法。
+- `/archive.work-query [作者] [查询]`：按作者或文本搜索 Work。
+- `/archive W1`：获取 Work 详情及有序图片/PDF Media。
 
-引导发布、编辑、移除只有收到固定关键词 `确认` 才继续；可选文本发送 `-` 跳过。
-底层紧凑管理命令的确认参数固定为大写 `Y`。这些 QQ 命令是高频操作的快捷入口，
-不是完整管理界面。
-
-### Archive WebUI
-
-Koishi Console 中的 Archive WebUI 是完整管理入口，覆盖：
-
-- Archive WebUI 使用三个页签：**报纸期数**、**收录作品** 与 **运维**；运维页签内
-  分为 **备份与恢复**、**生命周期审计** 两个分区。
-- 本地与 R2 预检状态、重新预检、备份队列状态和立即重试。
-- Paper/Work 的搜索、新建、编辑、附件替换、预览和下载。
-- Work Package 文件树与完整预览；HTML、SVG 等 Web 内容仅作为派生数据在受限
-  `sandbox` iframe 中显示，ZIP 始终是权威附件。
-- Publication Appearance 的双向详情、关联现有 Work、新建并关联 Work、解除关联，
-  以及页码、栏目和顺序信息。
-- 30 天软删除、恢复、提前清除、匿名化、替换附件的保留与恢复、生命周期历史。
-- 从 R2 清单生成恢复预览，检查新增、变化和冲突，选择本地或 R2 元数据后应用，
-  并查看恢复历史。
-
-附件首先持久写入本地目录；本地写入成功即表示归档成功。R2 失败只会把备份标记为
-可重试，不会使用户操作失败。读取也优先使用本地副本。本地预检失败会禁用附件写入，
-R2 预检失败则以本地可用的降级状态继续运行。
+QQ 不提供 Archive 上传、编辑、删除、恢复、备份重试或其他管理命令；Paper、Publication
+Appearance、ZIP Work Package 和旧 Koishi Archive WebUI 属于已退役或后续独立范围。
 
 ## 本地开发与验收
 
@@ -160,7 +139,7 @@ yarn check:plugin-loads
 ```
 
 本地 Koishi 集成实例位于被 Git 忽略的 `app/` 独立 Yarn 项目。它通过 `file:` 依赖加载
-五个插件，并配置 Database、Console、Sandbox 和 Archive WebUI：
+五个插件，并配置 Database、Console 与 Sandbox；Archive 在其中只作为 Payload 只读适配器。
 
 ```sh
 # 首次创建（使用官方 Koishi scaffold）
@@ -186,30 +165,15 @@ cd app
 yarn start
 ```
 
-在 Sandbox 中分别以成员和 Plugin Administrator 身份走通 Access、Intake、FAQ、Activity、
-Archive 上述紧凑命令；在 Console 验证 Access 授权维护，并在 Archive 页面验证预检、
-Paper/Work、完整 Work 预览、Publication Appearance、软删除、备份重试和恢复预览。
+在 Sandbox 中分别以成员和 Plugin Administrator 身份走通 Access、Intake、FAQ 与 Activity
+命令；Archive 的 QQ 验收只覆盖 Payload Work 搜索、详情和 Media 投递。Payload Admin 的
+Work、Media、WorkMedia、顺序、撤回和删除权限验收在 `apps/archive-payload/` 独立执行。
 `app/` 的配置、数据库、日志、缓存、环境文件和依赖均不得提交或发布。
 `yarn smoke:local-app` 会先校验五个本地依赖与必需服务配置，再启动实例、探测 Console，
 并把启动日志中的可见失败作为非零退出；缺失 `app/`、端口被占用或服务不可用都不是成功。
 
-默认测试完全使用内存或临时目录中的替身，不访问真实 R2。若要额外验证真实 R2，先为
-测试准备专用桶，再只通过部署环境注入下列变量；不要把值写入仓库、命令历史或日志：
-
-```text
-MEMEBOT_R2_ACCOUNT_ID
-MEMEBOT_R2_BUCKET_NAME
-MEMEBOT_R2_ACCESS_KEY_ID
-MEMEBOT_R2_SECRET_ACCESS_KEY
-```
-
-四项都存在时，可运行：
-
-```sh
-yarn vitest run plugins/memebot-archive/tests/r2.integration.test.ts
-```
-
-该可选测试会写入、读取、校验并删除诊断对象；未提供变量时自动跳过。
+默认测试完全使用内存或 fake HTTP Payload 边界，不访问生产数据库或真实 R2。Payload 应用
+的部署配置和运行时凭据只在 `apps/archive-payload/` 的独立环境中提供。
 
 ## 发布插件
 

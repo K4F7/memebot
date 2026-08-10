@@ -1,7 +1,6 @@
 import { h, type Session } from 'koishi'
 
 export interface PayloadArchiveReadConfig {
-  enabled: boolean
   baseUrl: string
   serviceToken: string
   timeoutMs: number

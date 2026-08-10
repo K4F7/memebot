@@ -1,23 +1,13 @@
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import access from '../plugins/memebot-access/src'
 import activity from '../plugins/memebot-activity/src'
-import archive, { ArchiveService, type ArchiveSession } from '../plugins/memebot-archive/src'
+import archive from '../plugins/memebot-archive/src'
 import faq from '../plugins/memebot-faq/src'
 import intake from '../plugins/memebot-intake/src'
-import { createDeliveryCapture, createKoishiTestHarness, qqQuotedCommand, type KoishiTestHarness } from './koishi'
+import { createKoishiTestHarness, qqQuotedCommand, type KoishiTestHarness } from './koishi'
 
 const harnesses: KoishiTestHarness[] = []
-const temporaryArchiveRoots: string[] = []
-
-async function temporaryArchiveRoot() {
-  const root = await mkdtemp(join(tmpdir(), 'memebot-archive-routes-'))
-  temporaryArchiveRoots.push(root)
-  return root
-}
 
 const activityWithAccess = {
   name: 'test-activity-with-access',
@@ -55,18 +45,6 @@ const intakeWithAccess = {
   },
 }
 
-const archiveWithAccess = {
-  name: 'test-archive-with-access',
-  apply(ctx: any, config: any) {
-    const result: { service?: ArchiveService } = {}
-    access.apply(ctx, config.access)
-    ctx.inject(['access'], (injected: any) => {
-      result.service = archive.apply(injected, config.archive)
-    })
-    return result
-  },
-}
-
 const allProtectedPluginsWithAccess = {
   name: 'test-all-protected-plugins-with-access',
   apply(ctx: any, config: any) {
@@ -78,7 +56,6 @@ const allProtectedPluginsWithAccess = {
       result.faq = injected.faq
       intake.apply(injected, config.intake)
       result.intake = injected.intake
-      result.archive = archive.apply(injected, config.archive)
     })
     return result
   },
@@ -86,7 +63,6 @@ const allProtectedPluginsWithAccess = {
 
 afterEach(async () => {
   await Promise.all(harnesses.splice(0).map(harness => harness.stop()))
-  await Promise.all(temporaryArchiveRoots.splice(0).map(root => rm(root, { recursive: true, force: true })))
 })
 
 describe('standalone plugin command smoke behaviors', () => {
@@ -95,7 +71,6 @@ describe('standalone plugin command smoke behaviors', () => {
       ['memebot-activity', activity, { notificationUsers: [], notificationGroups: [] }],
       ['memebot-faq', faq, { pageSize: 10 }],
       ['memebot-intake', intake, {}],
-      ['memebot-archive', archive, {}],
     ] as const
 
     for (const [name, plugin, config] of consumers) {
@@ -103,12 +78,12 @@ describe('standalone plugin command smoke behaviors', () => {
     }
   })
 
-  it('loads Access and all four protected consumers in one Context', async () => {
-    for (const plugin of [access, activity, faq, intake, archive]) expect(typeof plugin.apply).toBe('function')
+  it('loads Access and the three protected consumers in one Context', async () => {
+    for (const plugin of [access, activity, faq, intake]) expect(typeof plugin.apply).toBe('function')
     const harness = await createKoishiTestHarness(allProtectedPluginsWithAccess, {
       access: { administrators: [{ qq: '10001' }], managementGroups: [{ qq: '20001' }] },
       activity: { notificationUsers: [], notificationGroups: [] },
-      faq: { pageSize: 10 }, intake: {}, archive: {},
+      faq: { pageSize: 10 }, intake: {},
     })
     harnesses.push(harness)
     const administrator = await harness.client({ userId: '10001', channelId: '20001' })
@@ -117,7 +92,25 @@ describe('standalone plugin command smoke behaviors', () => {
     await expect(administrator.receive('activity')).resolves.toEqual(['暂无即将开始或进行中的活动。'])
     await expect(administrator.receive('faq')).resolves.toEqual(['暂无公开 FAQ。'])
     await expect(administrator.receive('intake')).resolves.toEqual(['暂无记录。'])
-    await expect(administrator.receive('archive.issues')).resolves.toEqual(['没有找到 Newspaper Issue。'])
+  })
+
+  it('loads Archive without Access and exposes only the remote read contract', async () => {
+    const previousFetch = globalThis.fetch
+    globalThis.fetch = (async () => new Response(JSON.stringify({ data: [], total: 0 }), {
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch
+    try {
+      const harness = await createKoishiTestHarness(archive, {
+        payload: { baseUrl: 'https://archive.test', serviceToken: 'machine-token', timeoutMs: 500 },
+      })
+      harnesses.push(harness)
+      const member = await harness.client({ userId: '10002', channelId: '20001' })
+
+      await expect(member.receive('archive.search works')).resolves.toEqual(['没有找到 Work。'])
+      await expect(member.receive('archive.issue-publish {}')).resolves.toEqual([])
+    } finally {
+      globalThis.fetch = previousFetch
+    }
   })
 
   it('keeps Activity public while Access separates administrator reads from writes', async () => {
@@ -282,157 +275,6 @@ describe('standalone plugin command smoke behaviors', () => {
     await expect(member.receive('activity')).resolves.toEqual([expect.not.stringContaining('更新后的例会')])
     await expect(client.receive('activity.history')).resolves.toEqual([expect.stringContaining('活动 #1：更新后的例会')])
     await expect(member.receive('activity #1')).resolves.toEqual([expect.stringContaining('状态：cancelled')])
-  })
-
-  it('publishes and retrieves authoritative Archive attachments through compact QQ routes', async () => {
-    const root = await temporaryArchiveRoot()
-    const harness = await createKoishiTestHarness(archiveWithAccess, {
-      access: { administrators: [{ qq: '10001' }], managementGroups: [{ qq: '20001' }] },
-      archive: { localPath: root },
-    })
-    harnesses.push(harness)
-    const administrator = await harness.client({ userId: '10001', channelId: '20001' })
-    const member = await harness.client({ userId: '10002', channelId: '20001' })
-    const pdf = Buffer.from('%PDF-1.7\nroute evidence\n%%EOF').toString('base64')
-    const zip = 'UEsDBBQAAAAIAAAAAACGphA2BwAAAAUAAAAKAAAAUkVBRE1FLnR4dMtIzcnJBwBQSwECHgMUAAAACAAAAAAAhqYQNgcAAAAFAAAACgAAAAAAAAAAAAAAAAAAAAAAUkVBRE1FLnR4dFBLBQYAAAAAAQABADgAAAAvAAAAAAA='
-    const paper = JSON.stringify({
-      month: '2026-08', issueNumber: '8', title: 'August',
-      attachment: { filename: 'august.pdf', contentType: 'application/pdf', data: `data:application/pdf;base64,${pdf}` },
-    })
-    const work = JSON.stringify({
-      title: 'Work', author: 'Alice',
-      attachment: { filename: 'work.zip', contentType: 'application/zip', data: `data:application/zip;base64,${zip}` },
-    })
-
-    await expect(administrator.receive(`archive.issue-publish ${paper}`)).resolves.toEqual(['已发布 Newspaper Issue P1。'])
-    await expect(administrator.receive(`archive.work-publish ${work}`)).resolves.toEqual(['已发布 Work W1。'])
-    await expect(member.receive('archive.search paper August')).resolves.toEqual(['P1 2026-08 第8期 August'])
-    await expect(member.receive('archive.search works Alice')).resolves.toEqual(['W1 Alice - Work'])
-    await expect(member.receive('archive P1')).resolves.toEqual(expect.arrayContaining([
-      expect.stringContaining('P1 2026-08 第8期 August'),
-      expect.stringContaining('august.pdf'),
-    ]))
-    await expect(member.receive('archive W1')).resolves.toEqual(expect.arrayContaining([
-      expect.stringContaining('W1 Alice - Work'),
-      expect.stringContaining('work.zip'),
-    ]))
-
-    await expect(administrator.receive('archive.issue-edit P1 Y {"title":"August-Revised"}')).resolves.toEqual(['已更新 Newspaper Issue P1。'])
-    await expect(administrator.receive('archive.work-edit W1 Y {"title":"Work-Revised"}')).resolves.toEqual(['已更新 Work W1。'])
-    await expect(member.receive('archive.search paper Revised')).resolves.toEqual(['P1 2026-08 第8期 August-Revised'])
-    await expect(member.receive('archive.search works Revised')).resolves.toEqual(['W1 Alice - Work-Revised'])
-
-    const service = (harness.pluginResult as any).service as ArchiveService
-    const retryPending = vi.spyOn(service, 'retryPending').mockResolvedValue(undefined)
-    await expect(administrator.receive('archive.retry')).resolves.toEqual(['已重试待同步附件。'])
-    expect(retryPending).toHaveBeenCalledOnce()
-
-    const removing = administrator.receive('archive.rm W1')
-    await new Promise<void>(resolve => setImmediate(resolve))
-    void administrator.receive('确认')
-    await expect(removing).resolves.toEqual(expect.arrayContaining([
-      expect.stringContaining('W1 Alice - Work-Revised'),
-      expect.stringContaining('已移除 Work W1，保留 30 天'),
-    ]))
-    await expect(member.receive('archive W1')).resolves.toEqual(['Work 不存在。'])
-  })
-
-  it('uses Access identity for Archive management reads and Access location for mutations', async () => {
-    const harness = await createKoishiTestHarness(archiveWithAccess, {
-      access: { administrators: [{ qq: '10002' }], managementGroups: [{ qq: '20001' }] }, archive: {},
-    })
-    harnesses.push(harness)
-    const ordinary = await harness.client({ userId: '10003', channelId: '20001' })
-    const administrator = await harness.client({ userId: '10002', channelId: 'unlisted' })
-    const metadata = '{"month":"2026-08","issueNumber":"8","title":"Issue"}'
-
-    await expect(ordinary.receive(`archive.issue-preview ${metadata}`)).resolves.toEqual(['你不是管理员。'])
-    await expect(administrator.receive(`archive.issue-preview ${metadata}`)).resolves.toEqual([expect.stringContaining('Newspaper Issue')])
-    await expect(administrator.receive(`archive.issue-publish ${metadata}`)).resolves.toEqual([
-      '此群不是管理群，请私聊操作或先添加该群。',
-    ])
-  })
-
-  it('navigates Publication Appearances and related search through a Mock session', async () => {
-    const harness = await createKoishiTestHarness(archiveWithAccess, { access: { administrators: [], managementGroups: [] }, archive: {} })
-    harnesses.push(harness)
-    const service = (harness.pluginResult as any).service as ArchiveService
-    const client = await harness.client({ userId: '10002', channelId: '20001' })
-    await client.receive('archive.issues')
-    service.db.issues.push({ id: 'P1', issueNumber: '1', month: '2026-08', title: 'Issue', publishedAt: new Date(), lifecycle: 'active' })
-    service.db.works.push({ id: 'W1', title: 'Work', author: 'Alice', description: 'Related description', publishedAt: new Date(), lifecycle: 'active' })
-    await service.associateWork({ authority: 4 }, 'P1', { workId: 'W1', page: '3', section: 'Features', displayOrder: 1 })
-    expect(service.searchIssues('Alice').map(item => item.id)).toEqual(['P1'])
-
-    await expect(client.receive('archive.search paper Alice')).resolves.toEqual([expect.stringContaining('P1 2026-08 第1期 Issue')])
-    await expect(client.receive('archive.search works Related')).resolves.toEqual([expect.stringContaining('W1 Alice - Work')])
-    await expect(client.receive('archive P1')).resolves.toEqual([expect.stringContaining('W1 Alice - Work · 第3页 · Features')])
-  })
-
-  it('shows the Archive target and requires explicit confirmation before soft deletion', async () => {
-    const harness = await createKoishiTestHarness(archiveWithAccess, {
-      access: { administrators: [{ qq: '10002' }], managementGroups: [{ qq: '20001' }] }, archive: {},
-    })
-    harnesses.push(harness)
-    const service = (harness.pluginResult as any).service as ArchiveService
-    const client = await harness.client({ userId: '10002', channelId: '20001' })
-    await client.receive('archive.issues')
-    service.db.works.push({ id: 'W1', title: 'Work to remove', author: 'Alice', publishedAt: new Date(), lifecycle: 'active' })
-
-    const started = client.receive('archive.rm W1')
-    await new Promise<void>(resolve => setImmediate(resolve))
-    const confirmation = client.receive('确认')
-    await confirmation
-
-    await expect(started).resolves.toEqual(expect.arrayContaining([
-      expect.stringContaining('W1 Alice - Work to remove'),
-      expect.stringContaining('已移除 Work W1，保留 30 天'),
-    ]))
-    expect(service.getWork('W1')).toBeUndefined()
-    expect(service.listRemoved({ authority: 4 })[0]).toMatchObject({ id: 'W1', lifecycle: 'removed' })
-  })
-
-  it('represents QQ-style IDs and quoted messages at the Mock boundary', async () => {
-    const harness = await createKoishiTestHarness(archiveWithAccess, { access: { administrators: [], managementGroups: [] }, archive: {} })
-    harnesses.push(harness)
-
-    const client = await harness.client({ userId: '2854196310', channelId: '768284112' })
-    await expect(client.receive(
-      qqQuotedCommand('741224233071829312', '上一条 QQ 消息', 'archive.issues'),
-    )).resolves.toEqual(['没有找到 Newspaper Issue。'])
-
-    expect(harness.messages).toContainEqual({
-      userId: '2854196310',
-      channelId: '768284112',
-      quote: { messageId: '741224233071829312', content: '上一条 QQ 消息' },
-    })
-  })
-
-  it('captures forward attempts and ordinary-delivery fallback', async () => {
-    const harness = await createKoishiTestHarness(archiveWithAccess, { access: { administrators: [], managementGroups: [] }, archive: {} })
-    harnesses.push(harness)
-    const issue = {
-      id: 'issue-2026-08',
-      issueNumber: '8',
-      month: '2026-08',
-      title: '八月刊',
-      publishedAt: new Date('2026-08-01T00:00:00Z'),
-    }
-    const service = (harness.pluginResult as any).service
-    service.db.issues.push(issue)
-    const capture = createDeliveryCapture({ failForward: true })
-    const client = await harness.client({ userId: '2854196310', channelId: '768284112' })
-    const session = harness.app.mock.session(client.event)
-
-    await service.sendIssue(session as unknown as ArchiveSession, issue.id, capture.sender)
-
-    expect(capture.forwarded).toEqual([issue])
-    expect(capture.ordinary).toEqual([issue])
-    expect(service.fallbackEvents).toEqual([{
-      id: issue.id,
-      kind: 'issue',
-      reason: 'forward-message unavailable or failed',
-    }])
   })
 
   it('pages public FAQ entries and opens answers by stable reference', async () => {

@@ -1,31 +1,19 @@
-# Archive Console browser acceptance
+# Archive management acceptance
 
-The Archive browser suite drives a real Koishi Console and records unavailable capabilities as **NOT EXECUTED**, never as a passing browser assertion.
+The former Koishi Archive Console browser suite is retired. The `memebot-archive` package no
+longer ships a Console entry, management listeners, Vue client, or browser test command.
 
-## Required local run
+Archive administration is exercised in the independent Payload application under
+`apps/archive-payload/`. Its current acceptance boundary is Payload Admin creating a Work,
+assigning image/PDF Media, creating ordered WorkMedia relationships, withdrawing Media, and
+confirming that physical deletion is unavailable.
 
-Start the independent `/app` Koishi project, then run from the repository root:
-
-```powershell
-$env:MEMEBOT_ARCHIVE_WEBUI_URL = 'http://127.0.0.1:5140'
-yarn workspace koishi-plugin-memebot-archive test:browser:required
-```
-
-POSIX shells can run the equivalent command inline:
+The Koishi package only needs deterministic API/adapter tests and QQ read smoke tests:
 
 ```sh
-MEMEBOT_ARCHIVE_WEBUI_URL=http://127.0.0.1:5140 yarn workspace koishi-plugin-memebot-archive test:browser:required
+corepack yarn workspace koishi-plugin-memebot-archive test
+corepack yarn vitest run tests/koishi-smoke.test.ts plugins/memebot-archive/tests/payload-read.test.ts
 ```
 
-The required command fails if the URL or Playwright Chromium is unavailable. The regular `test:browser` command exits successfully after printing `NOT EXECUTED` when browser execution is optional and unavailable.
-
-Playwright screenshots, traces, downloads, and generated ZIP fixtures are written under `output/playwright/archive/`.
-
-## Capability flags
-
-- `MEMEBOT_ARCHIVE_AUTH_MODE=absent` (default) executes the open local Console path.
-- `MEMEBOT_ARCHIVE_AUTH_MODE=installed` plus `MEMEBOT_ARCHIVE_AUTH_STORAGE_STATE=<path>` executes the pre-authenticated Auth/Login path. Without the storage state it is reported as not executed.
-- `MEMEBOT_ARCHIVE_BACKUP_RETRY=available` executes retry against a prepared failed R2 backup job. Without that fixture the capability is reported as not executed.
-- `MEMEBOT_ARCHIVE_R2_RECOVERY=available` executes recovery preview against prepared R2 manifests. Without manifests the capability is reported as not executed.
-
-The default local app has Auth/Login and R2 disabled, so the absent-auth path runs while installed-auth, backup retry, and recovery preview remain explicit skipped capabilities. Light and dark themes, responsive cards, URL history/refresh, keyboard paths, focus restoration, Issue/Work uploads, safe Work preview, Publication Appearance, removal, and restoration all execute locally.
+No local Koishi database, attachment directory, R2 backup fixture, Archive manifest, or
+`memebot-access` service is required for the read adapter.

@@ -11,13 +11,13 @@ import { PayloadArchiveReadAdapter, PayloadArchiveReadError, sendPayloadWork } f
 
 describe('PayloadArchiveReadAdapter', () => {
   it('requires an HTTP(S) endpoint and a dedicated machine credential', () => {
-    expect(() => new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'ftp://payload.test', serviceToken: 'token', timeoutMs: 500 })).toThrow(PayloadArchiveReadError)
-    expect(() => new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'https://payload.test', serviceToken: '  ', timeoutMs: 500 })).toThrow(PayloadArchiveReadError)
+    expect(() => new PayloadArchiveReadAdapter({ baseUrl: 'ftp://payload.test', serviceToken: 'token', timeoutMs: 500 })).toThrow(PayloadArchiveReadError)
+    expect(() => new PayloadArchiveReadAdapter({ baseUrl: 'https://payload.test', serviceToken: '  ', timeoutMs: 500 })).toThrow(PayloadArchiveReadError)
   })
 
   it('uses the machine credential and validates the versioned contract', async () => {
     const requests: Array<{ url: string; authorization: string | null }> = []
-    const adapter = new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'https://payload.test', serviceToken: 'machine-token', timeoutMs: 500 }, {
+    const adapter = new PayloadArchiveReadAdapter({ baseUrl: 'https://payload.test', serviceToken: 'machine-token', timeoutMs: 500 }, {
       fetch: (async (input, init) => {
         const request = new Request(input, init)
         requests.push({ url: request.url, authorization: request.headers.get('authorization') })
@@ -31,7 +31,7 @@ describe('PayloadArchiveReadAdapter', () => {
 
   it('accepts either the Payload site root or the versioned API root', async () => {
     const requests: string[] = []
-    const adapter = new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'https://payload.test/api/archive/v1', serviceToken: 'machine-token', timeoutMs: 500 }, {
+    const adapter = new PayloadArchiveReadAdapter({ baseUrl: 'https://payload.test/api/archive/v1', serviceToken: 'machine-token', timeoutMs: 500 }, {
       fetch: (async (input, init) => {
         const request = new Request(input, init)
         requests.push(request.url)
@@ -43,34 +43,34 @@ describe('PayloadArchiveReadAdapter', () => {
   })
 
   it('maps unavailable APIs and keeps a missing Work distinct from failure', async () => {
-    const missing = new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
+    const missing = new PayloadArchiveReadAdapter({ baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
       fetch: (async () => new Response(null, { status: 404 })) as typeof fetch,
     })
     await expect(missing.getWork('W9')).resolves.toBeUndefined()
 
-    const unavailable = new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
+    const unavailable = new PayloadArchiveReadAdapter({ baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
       fetch: (async () => { throw new Error('offline') }) as typeof fetch,
     })
     await expect(unavailable.searchWorks()).rejects.toMatchObject<Partial<PayloadArchiveReadError>>({ kind: 'unavailable' })
   })
 
   it('classifies authentication, timeout, and malformed boundary responses', async () => {
-    const unauthorized = new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
+    const unauthorized = new PayloadArchiveReadAdapter({ baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
       fetch: (async () => new Response(null, { status: 401 })) as typeof fetch,
     })
     await expect(unauthorized.searchWorks()).rejects.toMatchObject<Partial<PayloadArchiveReadError>>({ kind: 'unauthorized', status: 401 })
 
-    const timedOut = new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
+    const timedOut = new PayloadArchiveReadAdapter({ baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
       fetch: (async () => { throw Object.assign(new Error('aborted'), { name: 'AbortError' }) }) as typeof fetch,
     })
     await expect(timedOut.searchWorks()).rejects.toMatchObject<Partial<PayloadArchiveReadError>>({ kind: 'unavailable' })
 
-    const malformedJson = new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
+    const malformedJson = new PayloadArchiveReadAdapter({ baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
       fetch: (async () => new Response('{not-json', { headers: { 'content-type': 'application/json' } })) as typeof fetch,
     })
     await expect(malformedJson.searchWorks()).rejects.toMatchObject<Partial<PayloadArchiveReadError>>({ kind: 'contract' })
 
-    const malformedShape = new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
+    const malformedShape = new PayloadArchiveReadAdapter({ baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
       fetch: (async () => new Response(JSON.stringify({ data: { id: 'W1' } }), { headers: { 'content-type': 'application/json' } })) as typeof fetch,
     })
     await expect(malformedShape.searchWorks()).rejects.toMatchObject<Partial<PayloadArchiveReadError>>({ kind: 'contract' })
@@ -78,7 +78,7 @@ describe('PayloadArchiveReadAdapter', () => {
 
   it('downloads protected media without leaking the machine credential', async () => {
     const requests: Request[] = []
-    const adapter = new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
+    const adapter = new PayloadArchiveReadAdapter({ baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
       fetch: (async (input, init) => {
         const request = new Request(input, init)
         requests.push(request)
@@ -98,7 +98,7 @@ describe('PayloadArchiveReadAdapter', () => {
 
   it('does not add the machine credential to a relative media URL', async () => {
     const requests: Request[] = []
-    const adapter = new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
+    const adapter = new PayloadArchiveReadAdapter({ baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
       fetch: (async (input, init) => {
         const request = new Request(input, init)
         requests.push(request)
@@ -114,7 +114,7 @@ describe('PayloadArchiveReadAdapter', () => {
   })
 
   it('rejects malformed media descriptors instead of passing invalid sizes through', async () => {
-    const adapter = new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
+    const adapter = new PayloadArchiveReadAdapter({ baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
       fetch: (async () => new Response(JSON.stringify({ data: {
         id: 'W1', title: 'Example', author: 'Alice', media: [{
           id: 'm1', filename: 'cover.png', contentType: 'image/png', size: 'not-a-number',
@@ -126,7 +126,7 @@ describe('PayloadArchiveReadAdapter', () => {
   })
 
   it('rejects media access that is not the signed Payload media endpoint', async () => {
-    const adapter = new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
+    const adapter = new PayloadArchiveReadAdapter({ baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
       fetch: (async () => new Response(JSON.stringify({ data: {
         id: 'W1', title: 'Example', author: 'Alice', media: [{
           id: 'm1', filename: 'cover.png', contentType: 'image/png', size: 1,
@@ -139,7 +139,7 @@ describe('PayloadArchiveReadAdapter', () => {
 
   it('does not fetch media after its signed access expires', async () => {
     const fetch = vi.fn(async () => new Response(new Uint8Array([1]))) as typeof globalThis.fetch
-    const adapter = new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
+    const adapter = new PayloadArchiveReadAdapter({ baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
       fetch,
       now: () => Date.parse('2030-01-02T00:00:00.000Z'),
     })
@@ -153,7 +153,7 @@ describe('PayloadArchiveReadAdapter', () => {
 
   it('treats an invalid media expiry as a protected-media failure without fetching it', async () => {
     const fetch = vi.fn(async () => new Response(new Uint8Array([1]))) as typeof globalThis.fetch
-    const adapter = new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, { fetch })
+    const adapter = new PayloadArchiveReadAdapter({ baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, { fetch })
     const media = {
       id: 'm1', filename: 'cover.png', contentType: 'image/png', size: 1,
       access: { url: '/api/archive/v1/media/m1?signature=signed&expires=1', expiresAt: 'not-a-date' },
@@ -163,7 +163,7 @@ describe('PayloadArchiveReadAdapter', () => {
   })
 
   it('rejects a protected-media response whose content type disagrees with the descriptor', async () => {
-    const adapter = new PayloadArchiveReadAdapter({ enabled: true, baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
+    const adapter = new PayloadArchiveReadAdapter({ baseUrl: 'https://payload.test', serviceToken: 'token', timeoutMs: 500 }, {
       fetch: (async () => new Response('<html>error</html>', { headers: { 'content-type': 'text/html; charset=utf-8' } })) as typeof fetch,
     })
     const media = {

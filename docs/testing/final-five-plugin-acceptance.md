@@ -1,4 +1,8 @@
-# Final five-plugin acceptance record
+# Historical final five-plugin acceptance record
+
+> Historical record for the pre-Archive-v2 Koishi management boundary. The Archive results below
+> are retained for provenance only; current Archive management and verification follow
+> `docs/testing/archive-console-browser.md` and `docs/testing/archive-qq-shortcuts.md`.
 
 Issue: #42  
 Date: 2026-08-03 (Asia/Shanghai)  

@@ -8,9 +8,9 @@ Planning note: `memebot-faq` remains supported and is migrated to Access as part
 
 `memebot-access` is the central authorization source for every protected memebot plugin. Ordinary plugin features remain available in every QQ group. Business notification routing remains owned by each business plugin.
 
-The first integration updates `memebot-activity`, `memebot-faq`, `memebot-intake`, and `memebot-archive` together. Their local administrator and management-group configuration and predicates are removed rather than retained as fallbacks.
+The first integration updates `memebot-activity`, `memebot-faq`, and `memebot-intake` together. Their local administrator and management-group configuration and predicates are removed rather than retained as fallbacks. Archive v2 is a public-read QQ adapter and therefore does not load Access; its management surface belongs to Payload.
 
-This rollout adds the Access management page and gates Archive's existing Console page. It does not create new Console pages for Activity, FAQ, or Intake; any future protected page must use the same authenticated-page and backend-listener boundary.
+This rollout adds the Access management page. It does not create new Console pages for Activity, FAQ, or Intake, and it no longer exposes an Archive Console page; any future protected page must use the same authenticated-page and backend-listener boundary.
 
 ## Invariants
 
@@ -81,8 +81,8 @@ For state changes, the service centrally distinguishes identity denial (`你不�
 - A protected plugin cannot start without the access service.
 - No business plugin reads access persistence or reimplements identity-and-location rules.
 - Chat denial identifies whether administrator identity or management location failed.
-- Activity, FAQ, Intake, and Archive all use the access service in the first rollout.
-- None of those four plugins retains local administrator or management-group configuration.
+- Activity, FAQ, and Intake use the access service in the first rollout; Archive v2 is intentionally public-read only.
+- None of those three protected plugins retains local administrator or management-group configuration.
 - Activity, FAQ, and Intake receive no new Console pages in this rollout.
 - Access lists contain only persisted explicit administrators and management groups.
 - Adding or removing an administrator or management group changes the next authorization decision immediately.
@@ -93,6 +93,6 @@ For state changes, the service centrally distinguishes identity denial (`你不�
 - An administrator can view hidden FAQ entries in any group or private chat; management-group location does not restrict this read.
 - An administrator can view all Intake records in any group or private chat; management-group location applies only when changing Intake state.
 - Across all plugins, administrator-only reads are location-independent and only state-changing chat operations require a management location.
-- Automatic Archive cleanup, backup, and synchronization continue without a user session; manually triggered entry points still enforce their channel's access boundary.
+- Archive content management, storage, and lifecycle operations are owned by Payload; the Koishi adapter performs only machine-authenticated reads and QQ delivery.
 
 Architectural rationale is recorded in [ADR 0010](../adr/0010-centralize-plugin-authorization.md).

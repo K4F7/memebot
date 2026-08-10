@@ -1,13 +1,12 @@
 {
   "name": "koishi-plugin-memebot-archive",
-  "version": "0.1.1-alpha.20",
-  "description": "自用，月度报纸与作品归档插件",
+  "version": "0.1.1-alpha.21",
+  "description": "Payload Archive 只读 QQ 适配器",
   "license": "MIT",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "files": [
-    "lib",
-    "dist"
+    "lib"
   ],
   "keywords": [
     "chatbot",
@@ -17,27 +16,16 @@
     "memebot"
   ],
   "scripts": {
-    "build": "tsc -b && vite build",
-    "typecheck": "tsc -b --pretty false && tsc -p tsconfig.client.json --pretty false",
-    "test": "yarn build && vitest run",
-    "test:browser": "node e2e/run-browser.cjs",
-    "test:browser:required": "node e2e/run-browser.cjs --required",
-    "test:sandbox": "playwright test -c playwright.sandbox.config.ts"
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false",
+    "test": "yarn build && vitest run"
   },
   "peerDependencies": {
     "koishi": "^4.18.7"
   },
-  "dependencies": {
-    "@aws-sdk/client-s3": "^3.864.0"
-  },
   "devDependencies": {
-    "@koishijs/client": "^5.30.11",
-    "@playwright/test": "^1.62.1",
-    "@vitejs/plugin-vue": "^5.1.4",
     "koishi": "^4.18.7",
     "typescript": "^5.6.2",
-    "vite": "^5.4.10",
-    "vitest": "^3.2.4",
-    "vue": "^3.5.12"
+    "vitest": "^3.2.4"
   }
 }
