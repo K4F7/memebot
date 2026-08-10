@@ -34,6 +34,8 @@ interface ContextOptions {
   now?: number
   secret?: string
   ttlSeconds?: number
+  /** Internal retry path: validate the signature while allowing an old token's expiry. */
+  allowExpired?: boolean
 }
 
 interface MediaRequestFile {
@@ -137,7 +139,7 @@ export function verifyUploadContext(value: unknown, options: ContextOptions = {}
     return null
   }
   if (validated.filename !== candidate.filename || validated.filesize !== candidate.filesize || validated.mimeType !== candidate.mimeType) return null
-  if (candidate.expiresAt <= (options.now ?? Date.now())) return null
+  if (!options.allowExpired && candidate.expiresAt <= (options.now ?? Date.now())) return null
 
   let expected: Buffer
   let actual: Buffer

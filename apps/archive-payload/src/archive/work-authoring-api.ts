@@ -59,6 +59,14 @@ export async function handleWorkAuthoringApi(
   try {
     const segments = pathSegments(request)
     const context = withContext(options)
+    if (segments.length === 2 && segments[0] === 'cleanup' && segments[1] === 'retry' && request.method === 'POST') {
+      const body = await readJson(request)
+      const requestedLimit = body.limit === undefined ? 50 : Number(body.limit)
+      if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 500) {
+        throw new AuthoringServiceError('validation', '清理重试数量必须是 1 到 500 之间的整数。', { field: 'limit' })
+      }
+      return json(await service.retryCleanup(requestedLimit, context))
+    }
     if (segments[0] === 'works' && segments.length === 1 && request.method === 'POST') {
       return json(await service.createWork(await readJson(request) as any, context), 201)
     }

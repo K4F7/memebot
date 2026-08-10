@@ -18,6 +18,15 @@ For local development, Payload uses `push` mode to keep PostgreSQL in sync. Prod
 checked-in files in `src/migrations/`; an empty Neon database still needs the initial schema
 migration before the first deployment.
 
+The real PostgreSQL authoring transaction test is opt-in and must use a disposable database:
+
+```sh
+MEMEBOT_PAYLOAD_TEST_DATABASE_URL='postgresql://…/memebot_authoring_test' corepack yarn test
+```
+
+Without that dedicated URL the integration test is skipped; the normal suite uses the isolated
+authoring and read-contract seams.
+
 ## Vercel project setup
 
 Create or select the Vercel Project and connect the repository with Vercel Git Integration. Set the
@@ -95,6 +104,8 @@ publish succeeds. Publishing validates the full aggregate and promotes metadata 
 published manifest in one PostgreSQL transaction; a stale revision or failed publish leaves the
 current public snapshot and retryable draft unchanged. Published media bytes remain immutable, and
 removing a never-published draft item records an idempotent R2 cleanup intent.
+Authenticated maintenance clients can call `/api/work-authoring/v1/cleanup/retry` to retry pending
+or failed cleanup intents; object deletion is idempotent and the database intent records each attempt.
 
 Preview deployments are build-only until a separate, isolated Neon/R2 environment is provisioned.
 Do not copy Production credentials into Preview. Runtime smoke tests and Admin uploads are

@@ -8,20 +8,25 @@ import { AuthoringService } from '@/archive/work-authoring'
 
 export const runtime = 'nodejs'
 
+function createAuthoringService(payload: any): AuthoringService {
+  return new AuthoringService(
+    new PayloadWorkAuthoringRepository(payload),
+    new R2AuthoringObjectStore(),
+    { uploadSecret: process.env.ARCHIVE_MEDIA_SIGNING_SECRET || process.env.PAYLOAD_SECRET },
+  )
+}
+
 async function handle(request: Request): Promise<Response> {
   try {
     const payload = await getPayload({ config: await config })
     const auth = await payload.auth({ headers: request.headers })
-    if (!auth.user) return handleWorkAuthoringApi(request, new AuthoringService(new PayloadWorkAuthoringRepository(payload as any), new R2AuthoringObjectStore()), {})
+    if (!auth.user) return handleWorkAuthoringApi(request, createAuthoringService(payload), {})
     const req = await createLocalReq({
       req: { headers: request.headers, url: request.url },
       user: auth.user,
       urlSuffix: '/api/work-authoring/v1',
     }, payload)
-    const service = new AuthoringService(
-      new PayloadWorkAuthoringRepository(payload as any),
-      new R2AuthoringObjectStore(),
-    )
+    const service = createAuthoringService(payload)
     return handleWorkAuthoringApi(request, service, { user: auth.user, requestContext: req as any })
   } catch (error) {
     console.error('[work-authoring-api] request failed', error instanceof Error ? error.message : error)

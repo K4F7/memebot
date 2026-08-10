@@ -16,6 +16,7 @@ Shared request/response/error fixtures for:
 | `POST` | `/api/work-authoring/v1/works/:workId/uploads/authorize` | Direct R2 upload authorization |
 | `POST` | `/api/work-authoring/v1/works/:workId/uploads/finalize` | Finalize upload (idempotent) |
 | `DELETE` | `/api/work-authoring/v1/works/:workId/media/:mediaId` | Discard never-published draft media |
+| `POST` | `/api/work-authoring/v1/cleanup/retry` | Retry durable R2 cleanup intents (Admin-only maintenance) |
 
 Authentication: Payload Admin session (`credentials: 'include'`).
 

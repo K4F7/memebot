@@ -21,9 +21,10 @@ export async function up({ db }: MigrateUpArgs): Promise<void> {
     EXCEPTION WHEN duplicate_object THEN NULL;
     END $$;
     DO $$ BEGIN
-      CREATE TYPE "enum_media_cleanups_status" AS ENUM ('pending', 'deleted', 'failed');
+      CREATE TYPE "enum_media_cleanups_status" AS ENUM ('pending', 'processing', 'deleted', 'failed');
     EXCEPTION WHEN duplicate_object THEN NULL;
     END $$;
+    ALTER TYPE "enum_media_cleanups_status" ADD VALUE IF NOT EXISTS 'processing';
   `)
 
   await db.execute(sql`
@@ -79,11 +80,18 @@ export async function up({ db }: MigrateUpArgs): Promise<void> {
       ADD COLUMN IF NOT EXISTS "idempotency_key" varchar,
       ADD COLUMN IF NOT EXISTS "content_fingerprint" varchar,
       ADD COLUMN IF NOT EXISTS "replace_media_id" varchar,
-      ADD COLUMN IF NOT EXISTS "selection_index" numeric;
+      ADD COLUMN IF NOT EXISTS "selection_index" numeric,
+      ADD COLUMN IF NOT EXISTS "ever_published" boolean DEFAULT false,
+      ADD COLUMN IF NOT EXISTS "upload_context" jsonb;
     UPDATE "media" SET "upload_status" = 'finalized' WHERE "upload_status" IS NULL;
+    UPDATE "media" SET "ever_published" = false WHERE "ever_published" IS NULL;
     ALTER TABLE "media" ALTER COLUMN "upload_status" SET NOT NULL;
+    ALTER TABLE "media" ALTER COLUMN "ever_published" SET NOT NULL;
     CREATE INDEX IF NOT EXISTS "media_upload_id_idx" ON "media" USING btree ("upload_id");
     CREATE INDEX IF NOT EXISTS "media_idempotency_key_idx" ON "media" USING btree ("idempotency_key");
+    CREATE UNIQUE INDEX IF NOT EXISTS "media_work_idempotency_key_idx"
+      ON "media" USING btree ("work_id", "idempotency_key")
+      WHERE "idempotency_key" IS NOT NULL;
   `)
 
   await db.execute(sql`
@@ -120,7 +128,8 @@ export async function down({ db }: MigrateDownArgs): Promise<void> {
   await db.execute(sql`DROP INDEX IF EXISTS "payload_locked_documents_rels_media_cleanups_id_idx"`)
   await db.execute(sql`ALTER TABLE "payload_locked_documents_rels" DROP COLUMN IF EXISTS "media_cleanups_id"`)
   await db.execute(sql`DROP TABLE IF EXISTS "media_cleanups" CASCADE`)
-  await db.execute(sql`ALTER TABLE "media" DROP COLUMN IF EXISTS "upload_status", DROP COLUMN IF EXISTS "upload_id", DROP COLUMN IF EXISTS "idempotency_key", DROP COLUMN IF EXISTS "content_fingerprint", DROP COLUMN IF EXISTS "replace_media_id", DROP COLUMN IF EXISTS "selection_index"`)
+  await db.execute(sql`DROP INDEX IF EXISTS "media_work_idempotency_key_idx"`)
+  await db.execute(sql`ALTER TABLE "media" DROP COLUMN IF EXISTS "upload_status", DROP COLUMN IF EXISTS "upload_id", DROP COLUMN IF EXISTS "idempotency_key", DROP COLUMN IF EXISTS "content_fingerprint", DROP COLUMN IF EXISTS "replace_media_id", DROP COLUMN IF EXISTS "selection_index", DROP COLUMN IF EXISTS "ever_published", DROP COLUMN IF EXISTS "upload_context"`)
   await db.execute(sql`DROP TABLE IF EXISTS "_works_v" CASCADE`)
   await db.execute(sql`ALTER TABLE "works" DROP COLUMN IF EXISTS "revision", DROP COLUMN IF EXISTS "media_manifest", DROP COLUMN IF EXISTS "published_at", DROP COLUMN IF EXISTS "_status"`)
   await db.execute(sql`DROP TYPE IF EXISTS "enum_media_cleanups_status"`)

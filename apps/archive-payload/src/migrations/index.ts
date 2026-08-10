@@ -11,7 +11,7 @@ export const migrations = [
   {
     up: migration_20260810_220500_media_storage_key.up,
     down: migration_20260810_220500_media_storage_key.down,
-    name: '20260810_220500_media_storage_key'
+    name: '20260810_220500_media_storage_key',
   },
   {
     up: migration_20260811_010000_work_authoring.up,

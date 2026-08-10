@@ -85,6 +85,14 @@ describe('Work Authoring aggregate seam', () => {
     })
     expect(retry.media.map((item) => item.mediaId)).toEqual(secondFinal.media.map((item) => item.mediaId))
 
+    const signedContext = first.upload.context as { signature: string; [key: string]: unknown }
+    await expect(authoring.finalizeUpload(draft.workId, {
+      revision: draft.revision,
+      uploadId: first.upload.uploadId,
+      idempotencyKey: 'idem-first',
+      context: { ...signedContext, signature: `${signedContext.signature}tampered` },
+    })).rejects.toMatchObject({ code: 'upload_authorization_expired' })
+
     await expect(authoring.finalizeUpload(draft.workId, {
       revision: draft.revision,
       uploadId: second.upload.uploadId,
@@ -147,6 +155,16 @@ describe('Work Authoring aggregate seam', () => {
     const republished = await authoring.publish(aggregate.workId, { revision: edited.revision })
     expect(republished.publicationStatus).toBe('published')
     expect(republished.published!.media[0].filename).toBe('cover-v2.png')
+
+    const pruned = await authoring.saveDraft(aggregate.workId, {
+      revision: republished.revision,
+      title: republished.title,
+      author: republished.author,
+      media: [{ mediaId: republished.media[0].mediaId, filename: 'cover-v2.png' }],
+    })
+    await expect(repository.listMedia(aggregate.workId)).resolves.toHaveLength(2)
+    await expect(objectStore.head(upload.upload.storageKey)).resolves.toMatchObject({ size: 3, mimeType: 'image/png' })
+    await expect(authoring.discardMedia(aggregate.workId, publishedMediaId, pruned.revision)).rejects.toMatchObject({ code: 'conflict' })
   })
 
   it('rejects unsupported and oversized files before creating an R2 upload', async () => {

@@ -10,6 +10,7 @@ import type {
   StoredWork,
   WorkAuthoringRepository,
 } from './work-authoring'
+import { verifyUploadContext, type UploadContext } from './media-policy'
 import { AuthoringServiceError } from './work-authoring'
 
 type PayloadLike = {
@@ -39,6 +40,11 @@ function requestFor(payload: PayloadLike, input?: AuthoringRequestContext): any 
   return req
 }
 
+async function requestDatabase(payload: PayloadLike, req: any): Promise<any> {
+  const transactionID = req.transactionID ? await req.transactionID : undefined
+  return transactionID ? payload.db?.sessions?.[transactionID]?.db : payload.db?.drizzle
+}
+
 function manifest(value: unknown): StoredManifestEntry[] {
   if (!Array.isArray(value)) return []
   return value.map((entry) => ({
@@ -62,6 +68,12 @@ function toStoredWork(doc: any): StoredWork {
 }
 
 function toStoredMedia(doc: any): StoredMedia {
+  const uploadContext = doc.uploadContext && typeof doc.uploadContext === 'object'
+    ? verifyUploadContext(doc.uploadContext, {
+      allowExpired: true,
+      secret: process.env.ARCHIVE_MEDIA_SIGNING_SECRET || process.env.PAYLOAD_SECRET,
+    }) || undefined
+    : undefined
   return {
     id: String(doc.id),
     workId: relationId(doc.work) || '',
@@ -77,6 +89,8 @@ function toStoredMedia(doc: any): StoredMedia {
     contentFingerprint: doc.contentFingerprint ? String(doc.contentFingerprint) : undefined,
     replaceMediaId: doc.replaceMediaId ? String(doc.replaceMediaId) : undefined,
     selectionIndex: Number.isSafeInteger(Number(doc.selectionIndex)) ? Number(doc.selectionIndex) : undefined,
+    everPublished: Boolean(doc.everPublished),
+    uploadContext,
   }
 }
 
@@ -124,7 +138,7 @@ export class PayloadWorkAuthoringRepository implements WorkAuthoringRepository {
       overrideAccess: true,
       req: requestFor(this.payload, input),
     })
-    if (!doc || (doc._status !== 'published' && !doc.publishedAt)) return null
+    if (!doc || doc._status !== 'published' || !doc.publishedAt) return null
     return {
       revision: String(doc.revision || ''),
       title: String(doc.title || ''),
@@ -191,22 +205,32 @@ export class PayloadWorkAuthoringRepository implements WorkAuthoringRepository {
     return toStoredWork(doc)
   }
 
-  async createPendingMedia(input: { workId: string; uploadId: string; filename: string; filesize: number; mimeType: string; storageKey: string; replaceMediaId?: string; selectionIndex?: number; req?: AuthoringRequestContext }): Promise<StoredMedia> {
+  async createPendingMedia(input: { workId: string; uploadId: string; filename: string; filesize: number; mimeType: string; storageKey: string; replaceMediaId?: string; selectionIndex?: number; uploadContext?: UploadContext; req?: AuthoringRequestContext }): Promise<StoredMedia> {
     const req = requestFor(this.payload, input.req)
-    const doc = await this.payload.create({
-      collection: 'media', overrideAccess: true, req,
-      data: {
-        work: input.workId,
-        filename: input.filename,
-        mimeType: input.mimeType,
-        filesize: input.filesize,
-        storageKey: input.storageKey,
-        uploadId: input.uploadId,
-        uploadStatus: 'pending',
-        replaceMediaId: input.replaceMediaId,
-        selectionIndex: input.selectionIndex,
-      },
-    })
+    // Payload's upload operation requires a multipart file. Authoring creates
+    // the metadata row before the browser's direct R2 PUT, so insert that
+    // pending row on the same transaction connection instead of inventing a
+    // placeholder file.
+    const db = await requestDatabase(this.payload, req)
+    if (!db?.execute) throw new AuthoringServiceError('r2_transfer_failed', '数据库暂时不可用于登记上传。', { uploadId: input.uploadId })
+    const uploadContext = input.uploadContext ? JSON.stringify(input.uploadContext) : null
+    const result = await db.execute(sql`
+      INSERT INTO media (
+        work_id, filename, mime_type, filesize, storage_key, upload_id,
+        upload_status, replace_media_id, selection_index, upload_context
+      ) VALUES (
+        ${input.workId}, ${input.filename}, ${input.mimeType}, ${input.filesize},
+        ${input.storageKey}, ${input.uploadId}, 'pending', ${input.replaceMediaId || null},
+        ${input.selectionIndex ?? null}, ${uploadContext}::jsonb
+      )
+      RETURNING id, work_id AS work, filename, mime_type AS "mimeType", filesize,
+        storage_key AS "storageKey", upload_status AS "uploadStatus",
+        upload_id AS "uploadId", replace_media_id AS "replaceMediaId",
+        selection_index AS "selectionIndex", ever_published AS "everPublished",
+        upload_context AS "uploadContext"
+    `)
+    const doc = result.rows?.[0]
+    if (!doc) throw new AuthoringServiceError('r2_transfer_failed', '数据库未能登记上传。', { uploadId: input.uploadId })
     return toStoredMedia(doc)
   }
 
@@ -244,6 +268,12 @@ export class PayloadWorkAuthoringRepository implements WorkAuthoringRepository {
     const current = await this.getDraft(input.workId, req)
     if (!current) throw new AuthoringServiceError('not_found', 'Work 不存在。')
     if (current.revision !== input.expectedRevision) throw new AuthoringServiceError('stale_revision', '其他编辑者已修改该作品。', { currentRevision: current.revision })
+    for (const entry of current.media) {
+      await this.payload.update({
+        collection: 'media', id: entry.mediaId, overrideAccess: true, req,
+        data: { everPublished: true },
+      })
+    }
     const doc = await this.payload.update({
       collection: 'works', id: input.workId, draft: false, overrideAccess: true, req,
       data: {
@@ -253,6 +283,7 @@ export class PayloadWorkAuthoringRepository implements WorkAuthoringRepository {
         revision: input.revision,
         mediaManifest: current.media,
         publishedAt: new Date().toISOString(),
+        _status: 'published',
       },
     })
     return toStoredWork(doc)
@@ -260,21 +291,14 @@ export class PayloadWorkAuthoringRepository implements WorkAuthoringRepository {
 
   async recordCleanupIntent(input: { workId: string; mediaId: string; storageKey: string; req?: AuthoringRequestContext }): Promise<void> {
     const req = requestFor(this.payload, input)
-    const existing = await this.payload.find({
-      collection: 'media-cleanups', depth: 0, limit: 1, pagination: false, overrideAccess: true, req,
-      where: { storageKey: { equals: input.storageKey } },
-    })
-    if (existing.docs?.[0]) {
-      await this.payload.update({
-        collection: 'media-cleanups', id: existing.docs[0].id, overrideAccess: true, req,
-        data: { status: 'pending', attempts: 0, lastError: null },
-      })
-      return
-    }
-    await this.payload.create({
-      collection: 'media-cleanups', overrideAccess: true, req,
-      data: { work: input.workId, mediaId: input.mediaId, storageKey: input.storageKey, status: 'pending' },
-    })
+    const db = await requestDatabase(this.payload, req)
+    if (!db?.execute) throw new AuthoringServiceError('publication_failed', '数据库暂时不可记录媒体清理意图。')
+    await db.execute(sql`
+      INSERT INTO media_cleanups (work_id, media_id, storage_key, status, attempts, last_error)
+      VALUES (${input.workId}, ${input.mediaId}, ${input.storageKey}, 'pending', 0, NULL)
+      ON CONFLICT (storage_key) DO UPDATE
+      SET status = 'pending', attempts = 0, last_error = NULL, updated_at = now()
+    `)
   }
 
   async listCleanupIntents(input: { limit: number; req?: AuthoringRequestContext }): Promise<CleanupIntent[]> {
@@ -293,6 +317,49 @@ export class PayloadWorkAuthoringRepository implements WorkAuthoringRepository {
     }))
   }
 
+  async claimCleanupIntents(input: { limit: number; req?: AuthoringRequestContext }): Promise<CleanupIntent[]> {
+    const req = requestFor(this.payload, input.req ? { ...input.req } : {})
+    let started = false
+    try {
+      started = await initTransaction(req)
+      const db = await requestDatabase(this.payload, req)
+      if (!db?.execute) {
+        if (started) await commitTransaction(req)
+        return []
+      }
+      const result = await db.execute(sql`
+        WITH candidates AS (
+          SELECT id
+          FROM media_cleanups
+          WHERE status IN ('pending', 'failed')
+             OR (status = 'processing' AND updated_at < now() - interval '15 minutes')
+          ORDER BY updated_at, id
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${input.limit}
+        )
+        UPDATE media_cleanups AS cleanup
+        SET status = 'processing', attempts = cleanup.attempts + 1, updated_at = now()
+        FROM candidates
+        WHERE cleanup.id = candidates.id
+        RETURNING cleanup.work_id AS "workId", cleanup.media_id AS "mediaId",
+          cleanup.storage_key AS "storageKey", cleanup.status, cleanup.attempts,
+          cleanup.last_error AS "lastError"
+      `)
+      if (started) await commitTransaction(req)
+      return (result.rows || []).map((doc: any) => ({
+        workId: String(doc.workId || ''),
+        mediaId: String(doc.mediaId || ''),
+        storageKey: String(doc.storageKey || ''),
+        status: 'processing' as const,
+        attempts: Number(doc.attempts || 0),
+        lastError: doc.lastError ? String(doc.lastError) : undefined,
+      }))
+    } catch (error) {
+      if (started) await killTransaction(req)
+      throw error
+    }
+  }
+
   async markCleanupIntent(input: { storageKey: string; status: CleanupIntent['status']; attempts: number; lastError?: string; req?: AuthoringRequestContext }): Promise<void> {
     const req = requestFor(this.payload, input.req)
     const result = await this.payload.find({
@@ -307,15 +374,17 @@ export class PayloadWorkAuthoringRepository implements WorkAuthoringRepository {
     })
   }
 
-  async withWorkLock<T>(workId: string, input: AuthoringRequestContext | undefined, callback: () => Promise<T>): Promise<T> {
-    const req = requestFor(this.payload, input)
+  async withWorkLock<T>(workId: string, input: AuthoringRequestContext | undefined, callback: (transactionReq: AuthoringRequestContext) => Promise<T>): Promise<T> {
+    // Keep the caller's request free of transactionID after commit so follow-up
+    // aggregate reads and cleanup updates cannot accidentally reuse a closed
+    // transaction connection.
+    const req = requestFor(this.payload, input ? { ...input } : {})
     let started = false
     try {
       started = await initTransaction(req)
-      const transactionID = req.transactionID ? await req.transactionID : undefined
-      const db = transactionID ? this.payload.db?.sessions?.[transactionID]?.db : this.payload.db?.drizzle
+      const db = await requestDatabase(this.payload, req)
       if (db?.execute) await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`memebot:work-authoring:${workId}`}))`)
-      const result = await callback()
+      const result = await callback(req)
       if (started) await commitTransaction(req)
       return result
     } catch (error) {

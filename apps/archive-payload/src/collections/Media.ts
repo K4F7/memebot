@@ -135,5 +135,7 @@ export const Media: CollectionConfig = {
     { name: 'contentFingerprint', type: 'text', admin: { hidden: true, readOnly: true } },
     { name: 'replaceMediaId', type: 'text', admin: { hidden: true, readOnly: true } },
     { name: 'selectionIndex', type: 'number', admin: { hidden: true, readOnly: true } },
+    { name: 'everPublished', type: 'checkbox', required: true, defaultValue: false, admin: { hidden: true, readOnly: true } },
+    { name: 'uploadContext', type: 'json', admin: { hidden: true, readOnly: true } },
   ],
 }

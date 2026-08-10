@@ -41,6 +41,9 @@ export interface StoredMedia {
   contentFingerprint?: string
   replaceMediaId?: string
   selectionIndex?: number
+  everPublished?: boolean
+  /** The server-issued signed context is retained for cryptographic idempotency retries. */
+  uploadContext?: UploadContext
 }
 
 export interface StoredManifestEntry {
@@ -74,7 +77,7 @@ export interface CleanupIntent {
   workId: string
   mediaId: string
   storageKey: string
-  status: 'pending' | 'deleted' | 'failed'
+  status: 'pending' | 'processing' | 'deleted' | 'failed'
   attempts: number
   lastError?: string
 }
@@ -131,6 +134,7 @@ export interface WorkAuthoringRepository {
     storageKey: string
     replaceMediaId?: string
     selectionIndex?: number
+    uploadContext?: UploadContext
     req?: AuthoringRequestContext
   }): Promise<StoredMedia>
   finalizeUpload(input: {
@@ -163,8 +167,9 @@ export interface WorkAuthoringRepository {
     req?: AuthoringRequestContext
   }): Promise<void>
   listCleanupIntents(input: { limit: number; req?: AuthoringRequestContext }): Promise<CleanupIntent[]>
+  claimCleanupIntents(input: { limit: number; req?: AuthoringRequestContext }): Promise<CleanupIntent[]>
   markCleanupIntent(input: { storageKey: string; status: CleanupIntent['status']; attempts: number; lastError?: string; req?: AuthoringRequestContext }): Promise<void>
-  withWorkLock<T>(workId: string, req: AuthoringRequestContext | undefined, callback: () => Promise<T>): Promise<T>
+  withWorkLock<T>(workId: string, req: AuthoringRequestContext | undefined, callback: (transactionReq: AuthoringRequestContext) => Promise<T>): Promise<T>
 }
 
 export class AuthoringServiceError extends Error {
@@ -269,7 +274,21 @@ function cloneStoredWork(work: StoredWork): StoredWork {
 }
 
 function cloneStoredMedia(media: StoredMedia): StoredMedia {
-  return { ...media }
+  return { ...media, uploadContext: media.uploadContext ? { ...media.uploadContext } : undefined }
+}
+
+function sameUploadContext(left: UploadContext | undefined, right: UploadContext | undefined): boolean {
+  if (!left || !right) return false
+  return left.version === right.version
+    && left.collection === right.collection
+    && left.storageKey === right.storageKey
+    && left.filename === right.filename
+    && left.filesize === right.filesize
+    && left.mimeType === right.mimeType
+    && left.expiresAt === right.expiresAt
+    && left.workId === right.workId
+    && left.uploadId === right.uploadId
+    && left.signature === right.signature
 }
 
 function normalizeManifestEntry(entry: ManifestSaveEntry, media: StoredMedia): StoredManifestEntry {
@@ -337,16 +356,16 @@ export class AuthoringService {
 
   async saveDraft(workId: string, input: SaveDraftRequest, req?: AuthoringRequestContext): Promise<WorkAggregate> {
     const id = safeWorkId(workId)
-    const result = await this.repository.withWorkLock(id, req, async () => {
-      const work = await this.requireDraft(id, req)
+    const result = await this.repository.withWorkLock(id, req, async (transactionReq) => {
+      const work = await this.requireDraft(id, transactionReq)
       this.ensureRevision(work, input.revision)
       const metadata = validateWorkMetadata(input)
-      const media = await this.validateManifest(id, input.media, req)
-      const published = await this.repository.getPublished(id, req)
+      const media = await this.validateManifest(id, input.media, transactionReq)
+      const published = await this.repository.getPublished(id, transactionReq)
       const nextMediaIds = new Set(media.map((entry) => entry.mediaId))
       const publishedMediaIds = new Set(published?.media.map((entry) => entry.mediaId) || [])
       const cleanup: StoredMedia[] = []
-      const allMedia = await this.repository.listMedia(id, req)
+      const allMedia = await this.repository.listMedia(id, transactionReq)
       let saved = await this.repository.saveDraft({
         workId: id,
         expectedRevision: input.revision,
@@ -355,18 +374,18 @@ export class AuthoringService {
         author: metadata.author,
         description: cleanOptional(input.description),
         media,
-        req,
+        req: transactionReq,
       })
       for (const candidate of allMedia) {
-        if (nextMediaIds.has(candidate.id) || publishedMediaIds.has(candidate.id)) continue
+        if (nextMediaIds.has(candidate.id) || publishedMediaIds.has(candidate.id) || candidate.everPublished) continue
         saved = await this.repository.discardMedia({
           workId: id,
           mediaId: candidate.id,
           expectedRevision: saved.revision,
           revision: this.makeRevision(),
-          req,
+          req: transactionReq,
         })
-        await this.repository.recordCleanupIntent({ workId: id, mediaId: candidate.id, storageKey: candidate.storageKey, req })
+        await this.repository.recordCleanupIntent({ workId: id, mediaId: candidate.id, storageKey: candidate.storageKey, req: transactionReq })
         cleanup.push(candidate)
       }
       return { work: saved, cleanup }
@@ -379,15 +398,15 @@ export class AuthoringService {
 
   async authorizeUpload(workId: string, input: AuthorizeUploadRequest, req?: AuthoringRequestContext): Promise<AuthorizeUploadResponse> {
     const id = safeWorkId(workId)
-    const result = await this.repository.withWorkLock(id, req, async () => {
-      const work = await this.requireDraft(id, req)
+    const result = await this.repository.withWorkLock(id, req, async (transactionReq) => {
+      const work = await this.requireDraft(id, transactionReq)
       this.ensureRevision(work, input.revision)
       const upload = validateUpload(input)
       if (input.replaceMediaId) {
         if (!work.media.some((entry) => entry.mediaId === input.replaceMediaId)) {
           throw new AuthoringServiceError('validation', '待替换 Media 不在当前草稿中。', { mediaId: input.replaceMediaId })
         }
-        const replacement = await this.repository.getMedia(input.replaceMediaId, req)
+        const replacement = await this.repository.getMedia(input.replaceMediaId, transactionReq)
         if (!replacement || replacement.workId !== id || replacement.status !== 'finalized') {
           throw new AuthoringServiceError('validation', '待替换 Media 不存在或不可用。', { mediaId: input.replaceMediaId })
         }
@@ -409,7 +428,8 @@ export class AuthoringService {
         storageKey,
         replaceMediaId: input.replaceMediaId,
         selectionIndex: input.selectionIndex,
-        req,
+        uploadContext: context,
+        req: transactionReq,
       })
       let signed: AuthorizeUploadResult
       try {
@@ -455,22 +475,19 @@ export class AuthoringService {
       }
       const now = this.now()
       const verified = verifyUploadContext(input.context, { secret: this.uploadSecret, now })
-      const expiredContext = input.context && typeof input.context === 'object'
-        ? input.context as Partial<UploadContext>
+      const signedRetry = verified || verifyUploadContext(input.context, { secret: this.uploadSecret, now, allowExpired: true })
+      const persisted = existing.uploadContext
+        ? verifyUploadContext(existing.uploadContext, { secret: this.uploadSecret, now, allowExpired: true })
         : undefined
-      const isExpiredRetry = Boolean(
-        expiredContext
-        && expiredContext.workId === id
-        && expiredContext.uploadId === input.uploadId
-        && expiredContext.storageKey === existing.storageKey
-        && typeof expiredContext.expiresAt === 'number'
-        && expiredContext.expiresAt <= now,
-      )
-      if (verified) {
-        if (verified.workId !== id || verified.uploadId !== input.uploadId || existing.filename !== verified.filename || existing.filesize !== verified.filesize || existing.mimeType !== verified.mimeType) {
-          throw new AuthoringServiceError('conflict', '幂等键已用于另一份上传。', { uploadId: input.uploadId })
-        }
-      } else if (!isExpiredRetry) {
+      const matchesStoredUpload = signedRetry
+        && signedRetry.workId === id
+        && signedRetry.uploadId === input.uploadId
+        && signedRetry.storageKey === existing.storageKey
+        && existing.filename === signedRetry.filename
+        && existing.filesize === signedRetry.filesize
+        && existing.mimeType === signedRetry.mimeType
+        && (!existing.uploadContext || (persisted && sameUploadContext(persisted, signedRetry)))
+      if (!matchesStoredUpload || (!verified && (!persisted || signedRetry!.expiresAt > now))) {
         throw new AuthoringServiceError('upload_authorization_expired', '上传授权已过期或无效。', { uploadId: input.uploadId })
       }
       const aggregate = await this.getWork(id, req)
@@ -489,11 +506,23 @@ export class AuthoringService {
       throw new AuthoringServiceError('upload_finalization_failed', 'R2 对象 MIME 与上传授权不一致。', { uploadId: input.uploadId })
     }
 
-    const result = await this.repository.withWorkLock(id, req, async () => {
-      const work = await this.requireDraft(id, req)
-      const media = await this.repository.findMediaByUploadId(id, input.uploadId, req)
+    const result = await this.repository.withWorkLock(id, req, async (transactionReq) => {
+      const work = await this.requireDraft(id, transactionReq)
+      const claimed = await this.repository.findMediaByIdempotency(id, idempotencyKey, transactionReq)
+      if (claimed) {
+        if (claimed.uploadId !== input.uploadId) {
+          throw new AuthoringServiceError('conflict', '幂等键已用于另一份上传。', { uploadId: input.uploadId })
+        }
+      }
+      const media = await this.repository.findMediaByUploadId(id, input.uploadId, transactionReq)
       if (!media || media.storageKey !== verified.storageKey) {
         throw new AuthoringServiceError('upload_finalization_failed', '上传登记不存在。', { uploadId: input.uploadId })
+      }
+      if (media.uploadContext) {
+        const persisted = verifyUploadContext(media.uploadContext, { secret: this.uploadSecret, now: this.now(), allowExpired: true })
+        if (!persisted || !sameUploadContext(persisted, verified)) {
+          throw new AuthoringServiceError('conflict', '上传登记与授权上下文不一致。', { uploadId: input.uploadId })
+        }
       }
       if (media.status === 'finalized') {
         if (media.idempotencyKey !== idempotencyKey) {
@@ -522,7 +551,7 @@ export class AuthoringService {
         idempotencyKey,
         contentFingerprint: input.contentFingerprint,
         media: nextManifest,
-        req,
+        req: transactionReq,
       })
       return { work: updated, media: { ...media, status: 'finalized' as const, contentFingerprint: input.contentFingerprint } }
     })
@@ -541,13 +570,13 @@ export class AuthoringService {
 
   async discardMedia(workId: string, mediaId: string, revision: string, req?: AuthoringRequestContext): Promise<WorkAggregate> {
     const id = safeWorkId(workId)
-    const result = await this.repository.withWorkLock(id, req, async () => {
-      const work = await this.requireDraft(id, req)
+    const result = await this.repository.withWorkLock(id, req, async (transactionReq) => {
+      const work = await this.requireDraft(id, transactionReq)
       this.ensureRevision(work, revision)
-      const media = await this.repository.getMedia(mediaId, req)
+      const media = await this.repository.getMedia(mediaId, transactionReq)
       if (!media || media.workId !== id) throw new AuthoringServiceError('not_found', 'Media 不存在。', { mediaId })
-      const published = await this.repository.getPublished(id, req)
-      if (published?.media.some((item) => item.mediaId === mediaId)) {
+      const published = await this.repository.getPublished(id, transactionReq)
+      if (media.everPublished || published?.media.some((item) => item.mediaId === mediaId)) {
         throw new AuthoringServiceError('conflict', 'Published Work 仍引用该 Media，不能删除。', { mediaId })
       }
       const updated = await this.repository.discardMedia({
@@ -555,9 +584,9 @@ export class AuthoringService {
         mediaId,
         expectedRevision: revision,
         revision: this.makeRevision(),
-        req,
+        req: transactionReq,
       })
-      await this.repository.recordCleanupIntent({ workId: id, mediaId, storageKey: media.storageKey, req })
+      await this.repository.recordCleanupIntent({ workId: id, mediaId, storageKey: media.storageKey, req: transactionReq })
       return { updated, media }
     })
     await this.deleteCleanupObject({ workId: id, mediaId, storageKey: result.media.storageKey }, req)
@@ -566,7 +595,7 @@ export class AuthoringService {
 
   /** Process durable cleanup intents; safe to call from a cron/queue worker. */
   async retryCleanup(limit = 50, req?: AuthoringRequestContext): Promise<{ processed: number; deleted: number; failed: number }> {
-    const intents = await this.repository.listCleanupIntents({ limit: Math.max(1, Math.min(500, Math.floor(limit))), req })
+    const intents = await this.repository.claimCleanupIntents({ limit: Math.max(1, Math.min(500, Math.floor(limit))), req })
     let deleted = 0
     let failed = 0
     for (const intent of intents) {
@@ -579,11 +608,11 @@ export class AuthoringService {
 
   async publish(workId: string, input: { revision: string }, req?: AuthoringRequestContext): Promise<WorkAggregate> {
     const id = safeWorkId(workId)
-    const result = await this.repository.withWorkLock(id, req, async () => {
-      const work = await this.requireDraft(id, req)
+    const result = await this.repository.withWorkLock(id, req, async (transactionReq) => {
+      const work = await this.requireDraft(id, transactionReq)
       this.ensureRevision(work, input.revision)
       validateWorkMetadata(work)
-      const allMedia = await this.repository.listMedia(id, req)
+      const allMedia = await this.repository.listMedia(id, transactionReq)
       const byId = new Map(allMedia.map((item) => [item.id, item]))
       if (!work.media.length) throw new AuthoringServiceError('validation', 'Work 至少需要一个可读 Media。', { field: 'media' })
       for (const entry of work.media) {
@@ -595,7 +624,7 @@ export class AuthoringService {
       if (allMedia.some((item) => item.status === 'pending')) {
         throw new AuthoringServiceError('validation', '仍有上传中的 Media，暂不能发布。', { field: 'media' })
       }
-      return this.repository.publish({ workId: id, expectedRevision: input.revision, revision: this.makeRevision(), req })
+      return this.repository.publish({ workId: id, expectedRevision: input.revision, revision: this.makeRevision(), req: transactionReq })
     }).catch((error) => {
       if (error instanceof AuthoringServiceError) throw error
       throw new AuthoringServiceError('publication_failed', '发布失败，草稿已保留，可重试。')
@@ -617,7 +646,9 @@ export class AuthoringService {
   }
 
   private async deleteCleanupObject(intent: Pick<CleanupIntent, 'workId' | 'mediaId' | 'storageKey'> & Partial<Pick<CleanupIntent, 'attempts'>>, req?: AuthoringRequestContext): Promise<boolean> {
-    const attempts = (intent.attempts || 0) + 1
+    // Retry claims increment the durable attempt counter before this R2 call;
+    // direct cleanup from a draft mutation starts at attempt one.
+    const attempts = Math.max(1, intent.attempts || 0)
     try {
       await this.objectStore.delete(intent.storageKey)
       await this.repository.markCleanupIntent({ storageKey: intent.storageKey, status: 'deleted', attempts, req })
@@ -777,7 +808,7 @@ export class InMemoryWorkAuthoringRepository implements WorkAuthoringRepository 
     return cloneStoredWork(work)
   }
 
-  async createPendingMedia(input: { workId: string; uploadId: string; filename: string; filesize: number; mimeType: string; storageKey: string; replaceMediaId?: string; selectionIndex?: number }): Promise<StoredMedia> {
+  async createPendingMedia(input: { workId: string; uploadId: string; filename: string; filesize: number; mimeType: string; storageKey: string; replaceMediaId?: string; selectionIndex?: number; uploadContext?: UploadContext }): Promise<StoredMedia> {
     this.mediaSequence += 1
     const media: StoredMedia = {
       id: `media-${this.mediaSequence}`,
@@ -790,6 +821,7 @@ export class InMemoryWorkAuthoringRepository implements WorkAuthoringRepository 
       uploadId: input.uploadId,
       replaceMediaId: input.replaceMediaId,
       selectionIndex: input.selectionIndex,
+      uploadContext: input.uploadContext,
     }
     this.media.set(media.id, media)
     return cloneStoredMedia(media)
@@ -822,6 +854,10 @@ export class InMemoryWorkAuthoringRepository implements WorkAuthoringRepository 
     const work = this.works.get(input.workId)
     if (!work) throw new AuthoringServiceError('not_found', 'Work 不存在。')
     if (work.revision !== input.expectedRevision) throw new AuthoringServiceError('stale_revision', '其他编辑者已修改该作品。', { currentRevision: work.revision })
+    for (const entry of work.media) {
+      const media = this.media.get(entry.mediaId)
+      if (media) media.everPublished = true
+    }
     work.revision = input.revision
     work.published = {
       revision: input.revision,
@@ -851,20 +887,32 @@ export class InMemoryWorkAuthoringRepository implements WorkAuthoringRepository 
       .map((intent) => ({ ...intent }))
   }
 
+  async claimCleanupIntents(input: { limit: number }): Promise<CleanupIntent[]> {
+    const claimed = [...this.cleanupIntents.values()]
+      .filter((intent) => intent.status === 'pending' || intent.status === 'failed')
+      .slice(0, input.limit)
+      .map((intent) => {
+        const next = { ...intent, status: 'processing' as const, attempts: Math.max(1, intent.attempts + 1) }
+        this.cleanupIntents.set(intent.storageKey, next)
+        return { ...next }
+      })
+    return claimed
+  }
+
   async markCleanupIntent(input: { storageKey: string; status: CleanupIntent['status']; attempts: number; lastError?: string }): Promise<void> {
     const intent = this.cleanupIntents.get(input.storageKey)
     if (!intent) return
     this.cleanupIntents.set(input.storageKey, { ...intent, status: input.status, attempts: input.attempts, lastError: input.lastError })
   }
 
-  async withWorkLock<T>(workId: string, _req: AuthoringRequestContext | undefined, callback: () => Promise<T>): Promise<T> {
+  async withWorkLock<T>(workId: string, req: AuthoringRequestContext | undefined, callback: (transactionReq: AuthoringRequestContext) => Promise<T>): Promise<T> {
     const previous = this.locks.get(workId)
     let release!: () => void
     const current = new Promise<void>((resolve) => { release = resolve })
     this.locks.set(workId, current)
     if (previous) await previous
     try {
-      return await callback()
+      return await callback(req || {})
     } finally {
       release()
       if (this.locks.get(workId) === current) this.locks.delete(workId)

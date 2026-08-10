@@ -22,6 +22,7 @@ export const MediaCleanup: CollectionConfig = {
       defaultValue: 'pending',
       options: [
         { label: 'Pending', value: 'pending' },
+        { label: 'Processing', value: 'processing' },
         { label: 'Deleted', value: 'deleted' },
         { label: 'Failed', value: 'failed' },
       ],

@@ -52,4 +52,19 @@ describe('Work Authoring API boundary', () => {
     expect(stale.status).toBe(409)
     await expect(stale.json()).resolves.toMatchObject({ error: { code: 'stale_revision', currentRevision: current.revision, aggregate: { revision: current.revision } } })
   })
+
+  it('exposes authenticated cleanup retry as a bounded maintenance operation', async () => {
+    const { service } = setup()
+    const response = await handleWorkAuthoringApi(
+      new Request('https://archive.test/api/work-authoring/v1/cleanup/retry', {
+        method: 'POST',
+        body: JSON.stringify({ limit: 10 }),
+        headers: { 'content-type': 'application/json' },
+      }),
+      service,
+      { user: { id: 'editor-1' } },
+    )
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({ processed: 0, deleted: 0, failed: 0 })
+  })
 })
