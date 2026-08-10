@@ -1,4 +1,5 @@
 import { validateMediaMimeType } from './mime'
+import { createStorageKey } from './media-policy'
 import type {
   ArchiveApiSource,
   ArchiveMediaBody,
@@ -69,6 +70,7 @@ export class InMemoryArchiveStore implements ArchiveApiSource {
       contentType,
       size: input.bytes.byteLength,
       workId: work.archiveId,
+      storageKey: createStorageKey(),
       bytes: new Uint8Array(input.bytes),
     }
     this.media.push(row)

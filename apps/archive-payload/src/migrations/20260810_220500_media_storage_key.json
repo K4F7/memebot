@@ -331,9 +331,21 @@
           "primaryKey": false,
           "notNull": true
         },
+        "storage_key": {
+          "name": "storage_key",
+          "type": "varchar",
+          "primaryKey": false,
+          "notNull": true
+        },
         "alt": {
           "name": "alt",
           "type": "varchar",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "withdrawn_at": {
+          "name": "withdrawn_at",
+          "type": "timestamp(3) with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -395,6 +407,27 @@
         }
       },
       "indexes": {
+        "media_filename_compound_idx": {
+          "name": "media_filename_compound_idx",
+          "columns": [
+            {
+              "expression": "filename",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "storage_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "media_work_idx": {
           "name": "media_work_idx",
           "columns": [
@@ -406,6 +439,21 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "media_storage_key_idx": {
+          "name": "media_storage_key_idx",
+          "columns": [
+            {
+              "expression": "storage_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -450,7 +498,7 @@
               "nulls": "last"
             }
           ],
-          "isUnique": true,
+          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -618,7 +666,15 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "work_media_work_display_order_unique": {
+          "name": "work_media_work_display_order_unique",
+          "columns": [
+            "work_id",
+            "display_order"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -1402,6 +1458,6 @@
     "tables": {},
     "columns": {}
   },
-  "id": "4a4433ff-1027-48a9-bbef-a5103ea12734",
+  "id": "57884d27-dd9e-453c-bc31-015a59e85c9d",
   "prevId": "00000000-0000-0000-0000-000000000000"
 }

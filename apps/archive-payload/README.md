@@ -77,10 +77,18 @@ DATABASE_URL='postgresql://…-pooler…?sslmode=require' \
 ```
 
 The R2 bucket remains private. Configure bucket CORS for the Payload/Vercel Admin origins and
-`PUT`/`GET` as required by direct uploads. Payload's S3 storage adapter uses `clientUploads` so
-large image/PDF uploads go directly from the Admin browser to R2 instead of through Vercel's
-4.5 MB Function body limit. The custom Archive media endpoint keeps its HMAC check and redirects
-to a short-lived R2 presigned GET URL, so Vercel does not proxy the media body.
+`PUT`/`GET` with the `Content-Type` and `Content-Length` headers used by direct uploads. The
+custom Payload R2 adapter uses `clientUploads` so image/PDF bytes go directly from the Admin
+browser to R2 instead of through Vercel's 4.5 MB Function body limit. The signer and Payload's
+global upload limit both reject files over 100 MB before/at upload. Every Media record stores an
+opaque `storageKey` such as `media/<uuid>`; display filenames are never used to identify R2
+objects. The canonical Archive media endpoint keeps its HMAC check and redirects to a short-lived
+R2 presigned GET URL, so Vercel does not proxy the media body. The separate authenticated Payload
+Admin preview endpoint resolves the Media ID to the same presigned URL.
+
+Preview deployments are build-only until a separate, isolated Neon/R2 environment is provisioned.
+Do not copy Production credentials into Preview. Runtime smoke tests and Admin uploads are
+Production-only for this rollout.
 
 ## GitHub Actions CI and initial schema
 

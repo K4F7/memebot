@@ -37,7 +37,7 @@ export const Works: CollectionConfig = {
     read: ({ req }) => Boolean(req.user),
     create: ({ req }) => Boolean(req.user),
     update: ({ req }) => Boolean(req.user),
-    delete: ({ req }) => Boolean(req.user),
+    delete: () => false,
   },
   hooks: {
     beforeValidate: [async ({ data, operation, originalDoc, req }) => {

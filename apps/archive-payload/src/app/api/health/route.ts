@@ -24,7 +24,8 @@ export async function GET() {
       storageVerified = true
     }
     return Response.json({ status: 'ok' })
-  } catch {
+  } catch (error) {
+    console.error('[archive-health] check failed', error instanceof Error ? error.message : error)
     return Response.json({ status: 'unavailable' }, { status: 503 })
   }
 }

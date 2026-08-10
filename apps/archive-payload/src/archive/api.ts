@@ -110,8 +110,14 @@ export async function handleArchiveApi(
     const id = isWorksPath ? segments[1] : segments[0]
     if (!id) {
       const query = url.searchParams.get('query') || url.searchParams.get('q') || url.searchParams.get('text') || ''
-      const works = await source.searchWorks(query, url.searchParams.get('author') || undefined)
-      return json({ data: works, works, total: works.length })
+      const author = url.searchParams.get('author') || undefined
+      if (source.searchWorksWithTotal) {
+        const result = await source.searchWorksWithTotal(query, author)
+        return json({ data: result.data, works: result.data, total: result.total })
+      }
+      const works = await source.searchWorks(query, author)
+      const data = works.slice(0, 1000)
+      return json({ data, works: data, total: works.length })
     }
     const detail = await source.getWork(id)
     if (!detail) throw new ArchiveApiError('not-found', 'Work 不存在或尚未完成 Media 关系。', 404)

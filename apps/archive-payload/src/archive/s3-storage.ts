@@ -15,7 +15,7 @@ export interface ObjectStore {
 
 let cached: { endpoint: string; bucket: string; client: S3Client } | undefined
 
-function toWebStream(body: unknown): ReadableStream<Uint8Array> {
+export function toWebStream(body: unknown): ReadableStream<Uint8Array> {
   const candidate = body as {
     transformToWebStream?: () => ReadableStream<Uint8Array>
   }
@@ -33,18 +33,30 @@ function getClient(endpoint: string, bucket: string): S3Client {
     },
     endpoint,
     forcePathStyle: true,
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED',
     region: process.env.R2_REGION || 'auto',
   })
   cached = { endpoint, bucket, client }
   return client
 }
 
-export function createR2ObjectStore(): ObjectStore | undefined {
+export interface R2Connection {
+  bucket: string
+  client: S3Client
+}
+
+export function getR2Connection(): R2Connection | undefined {
   const endpoint = process.env.R2_ENDPOINT
   const bucket = process.env.R2_BUCKET
   if (!endpoint || !bucket || !process.env.R2_ACCESS_KEY_ID || !process.env.R2_SECRET_ACCESS_KEY) return undefined
+  return { bucket, client: getClient(endpoint, bucket) }
+}
 
-  const client = getClient(endpoint, bucket)
+export function createR2ObjectStore(): ObjectStore | undefined {
+  const connection = getR2Connection()
+  if (!connection) return undefined
+  const { bucket, client } = connection
   return {
     async get(key) {
       try {

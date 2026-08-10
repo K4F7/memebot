@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS deps
+FROM node:24-bookworm-slim@sha256:65932751ed4073ed02f5c04e494e4b2572a891b7dbea0568a863dc80341bf848 AS deps
 
 WORKDIR /app
 COPY package.json yarn.lock .yarnrc.yml ./
@@ -11,7 +11,7 @@ ENV PAYLOAD_BUILD=1
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN yarn build
 
-FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS runner
+FROM node:24-bookworm-slim@sha256:65932751ed4073ed02f5c04e494e4b2572a891b7dbea0568a863dc80341bf848 AS runner
 
 ENV NODE_ENV=production
 ENV HOSTNAME=0.0.0.0

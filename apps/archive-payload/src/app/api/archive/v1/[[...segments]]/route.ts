@@ -22,7 +22,8 @@ export async function GET(request: Request) {
       serviceToken: process.env.ARCHIVE_SERVICE_TOKEN || '',
       signingSecret: process.env.ARCHIVE_MEDIA_SIGNING_SECRET || '',
     })
-  } catch {
+  } catch (error) {
+    console.error('[archive-api] request failed', error instanceof Error ? error.message : error)
     return new Response(JSON.stringify({ error: { code: 'unavailable', message: 'Archive 服务暂时不可用。' } }), {
       status: 503,
       headers: { 'content-type': 'application/json; charset=utf-8' },

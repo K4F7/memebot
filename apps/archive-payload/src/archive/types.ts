@@ -5,6 +5,11 @@ export interface ArchiveWorkSummary {
   description?: string
 }
 
+export interface ArchiveSearchResult {
+  data: ArchiveWorkSummary[]
+  total: number
+}
+
 export interface ArchiveMediaDescriptor {
   id: string
   filename: string
@@ -27,7 +32,7 @@ export interface ArchiveMediaRecord {
   contentType: string
   size: number
   workId: string
-  prefix?: string
+  storageKey: string
 }
 
 export interface ArchiveMediaBody {
@@ -39,6 +44,7 @@ export interface ArchiveMediaBody {
 
 export interface ArchiveApiSource {
   searchWorks(query: string, author?: string): Promise<ArchiveWorkSummary[]>
+  searchWorksWithTotal?(query: string, author?: string): Promise<ArchiveSearchResult>
   getWork(id: string): Promise<ArchiveWorkDetail | undefined>
   getMedia(id: string): Promise<ArchiveMediaRecord | undefined>
   readMedia(media: ArchiveMediaRecord): Promise<ArchiveMediaBody | undefined>

@@ -44,13 +44,17 @@ schema change.
 
 ## Smoke checks
 
-After deployment, run the existing deterministic checks and the Archive staging smoke against a
-protected Vercel Preview or production URL when credentials are available:
+After the initial migration and production deployment, run the deterministic checks and the
+Archive smoke against the protected Vercel Production URL when credentials are available. Preview
+deployments are build-only until an isolated Preview Neon database and R2 bucket are provisioned;
+do not use Preview for runtime smoke or upload testing:
 
 ```sh
 corepack yarn typecheck
 corepack yarn build
 corepack yarn test
+# The smoke script name and MEMEBOT_ARCHIVE_STAGING_* variables are retained
+# for compatibility; the URL below must be the protected Vercel Production URL.
 MEMEBOT_ARCHIVE_STAGING_URL=https://archive.example \
 MEMEBOT_ARCHIVE_STAGING_TOKEN='set-through-a-secret-manager' \
 corepack yarn smoke:archive-staging
@@ -58,5 +62,6 @@ corepack yarn smoke:archive-staging
 
 The smoke must verify health, machine-authenticated Work search/detail, HMAC media access, expired
 signatures, private direct R2 access, and Koishi merged-forward delivery. For the Admin path, also
-verify that image/PDF uploads use the Payload signed PUT URL and that a media request follows the
-HMAC endpoint redirect to an R2 presigned GET URL.
+verify that image/PDF uploads use the custom Payload signed PUT URL, that duplicate display
+filenames receive different persisted R2 keys, and that a media request follows the HMAC endpoint
+redirect to an R2 presigned GET URL.
