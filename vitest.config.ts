@@ -7,6 +7,10 @@ export default defineConfig({
     alias: [{ find: /^koishi$/, replacement: '@koishijs/core' }],
   },
   test: {
-    exclude: configDefaults.exclude,
+    // The Payload app is an independent Yarn project with its own lockfile
+    // and Vitest configuration. Its tests run from the app directory in CI;
+    // discovering them from this root config makes a clean root install fail
+    // before the app's dependencies are installed.
+    exclude: [...configDefaults.exclude, 'apps/archive-payload/**'],
   },
 })

@@ -7,7 +7,16 @@ import { ALLOWED_MEDIA_TYPES, validateMediaMimeType } from '../archive/mime'
 
 export const Media: CollectionConfig = {
   slug: 'media',
-  admin: { useAsTitle: 'filename', defaultColumns: ['filename', 'mimeType', 'filesize', 'work'] },
+  labels: {
+    singular: 'Media',
+    plural: 'Media',
+  },
+  admin: {
+    group: '档案管理',
+    useAsTitle: 'filename',
+    defaultColumns: ['filename', 'mimeType', 'filesize', 'work', 'withdrawnAt'],
+    description: '媒体文件。所属 Work 创建后不可修改；撤回后保留元数据与 R2 对象。',
+  },
   access: {
     read: ({ req }) => Boolean(req.user),
     create: ({ req }) => Boolean(req.user),
