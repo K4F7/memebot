@@ -8,20 +8,6 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: memebot
-          POSTGRES_PASSWORD: memebot
-          POSTGRES_DB: memebot_authoring_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U memebot -d memebot_authoring_test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -33,17 +19,3 @@ jobs:
       - run: yarn check:plugin-loads
       - run: yarn test
       - run: yarn build
-      - name: Verify Payload archive app
-        working-directory: apps/archive-payload
-        run: corepack yarn install --immutable
-      - name: Typecheck Payload archive app
-        working-directory: apps/archive-payload
-        run: corepack yarn typecheck
-      - name: Test Payload archive app
-        working-directory: apps/archive-payload
-        env:
-          MEMEBOT_PAYLOAD_TEST_DATABASE_URL: postgresql://memebot:memebot@127.0.0.1:5432/memebot_authoring_test
-        run: corepack yarn test
-      - name: Build Payload archive app
-        working-directory: apps/archive-payload
-        run: corepack yarn build

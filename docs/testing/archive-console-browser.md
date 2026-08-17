@@ -1,23 +1,21 @@
 # Archive management acceptance
 
-The former Koishi Archive Console browser suite is retired. The `memebot-archive` package no
-longer ships a Console entry, management listeners, Vue client, or browser test command.
+The former Koishi Archive Console browser suite is retired. The `memebot-archive`
+package no longer ships a Console entry, management listeners, Vue client, or
+browser test command.
 
-Archive administration is exercised in the independent Payload application under
-`apps/archive-payload/`. Its current acceptance boundary is the unified Work editor creating and
-saving a draft, direct-uploading image/PDF Media in selection order, explicitly publishing a
-complete aggregate, verifying that drafts remain absent from the Archive Read Contract, editing a
-Published Work without changing the current public snapshot, discarding a never-published draft
-Media item, withdrawing published Media, and confirming that published physical deletion is
-unavailable. A failed publish must leave both the previous publication and the retryable draft
-unchanged.
+Archive management does not live in this repository. The Payload application that
+previously lived under `apps/archive-payload/` is frozen on
+`archive/payload-cms` and is not built, tested, or deployed from `main`. A later
+content platform will own administration outside this plugin monorepo.
 
-The Koishi package only needs deterministic API/adapter tests and QQ read smoke tests:
+The Koishi package only needs fail-closed QQ read coverage:
 
 ```sh
 corepack yarn workspace koishi-plugin-memebot-archive test
-corepack yarn vitest run tests/koishi-smoke.test.ts plugins/memebot-archive/tests/payload-read.test.ts
+corepack yarn vitest run tests/koishi-smoke.test.ts
 ```
 
-No local Koishi database, attachment directory, R2 backup fixture, Archive manifest, or
-`memebot-access` service is required for the read adapter.
+No local Koishi database, attachment directory, R2 backup fixture, Archive
+manifest, Payload configuration, or `memebot-access` service is required for the
+current read surface.

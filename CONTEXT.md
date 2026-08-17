@@ -74,11 +74,11 @@ A stable public reference assigned to one newspaper issue or work. It remains as
 
 ## Archive Read Contract
 
-The versioned machine-facing boundary through which Koishi searches Works, retrieves Work details, and requests protected Media Items. It is separate from Payload's administration and generated collection endpoints.
+The unbound machine-facing boundary through which Koishi will search Works, retrieve Work details, and request protected Media Items once a content backend is configured. It is separate from any content-platform administration surface and is not currently bound on the Koishi mainline.
 
 ## Archive Administrator
 
-A user account authorized to manage Archive records in the PayloadCMS administration surface. In the MVP, every authenticated Archive Administrator may withdraw Media Items but none may physically delete Archive records; this identity is not a QQ identity and does not grant memebot-access authorization.
+A content-platform identity authorized to manage Archive records outside QQ. This identity is not a QQ identity, is not PayloadCMS, and does not grant memebot-access authorization.
 
 ## Help Document
 

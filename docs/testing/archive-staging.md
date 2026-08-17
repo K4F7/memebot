@@ -1,17 +1,10 @@
-# Archive staging acceptance (retired VPS runbook)
+# Archive staging smoke (historical)
 
-This file is retained as a historical record for issue #52. The VPS, SSH, GHCR, and staging
-workflows it described have been removed and must not be recreated for production.
+Archive management does not live in this repository. The Payload staging black-box
+smoke that previously drove `yarn smoke:archive-staging` is removed from `main`
+with the Payload application. The frozen Payload tree remains on
+`archive/payload-cms`.
 
-The current production boundary is Vercel Git Integration + Neon PostgreSQL + private Cloudflare
-R2. Use [`archive-vercel.md`](archive-vercel.md) for the deployment and acceptance path. The
-deterministic repository checks remain:
-
-```sh
-corepack yarn typecheck
-corepack yarn test
-corepack yarn build
-```
-
-The old Docker/Compose files under `apps/archive-payload/deploy/` are retained only for local or
-manual compatibility and are not a staging deployment mechanism.
+Current Archive acceptance on the Koishi mainline is the fail-closed QQ read
+surface documented in [`archive-qq-shortcuts.md`](archive-qq-shortcuts.md) and
+[`archive-console-browser.md`](archive-console-browser.md).

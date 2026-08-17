@@ -8,7 +8,6 @@
   "scripts": {
     "build": "yarn workspaces foreach --all --topological-dev run build",
     "check:plugin-loads": "node scripts/check-plugin-loads.cjs",
-    "smoke:archive-staging": "node scripts/archive-staging-smoke.cjs",
     "smoke:local-app": "node scripts/smoke-local-app.cjs",
     "test": "vitest run",
     "typecheck": "yarn workspaces foreach --all --topological-dev run typecheck && tsc -p tsconfig.tests.json --pretty false"
