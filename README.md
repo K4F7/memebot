@@ -104,7 +104,9 @@ QQ 联系提交者，Bot 不承载管理员与提交者之间的回复会话。
 `memebot-access`，也不创建 Archive 表、写入本地附件、上传 ZIP、维护清单或执行生命周期
 操作。旧本地附件库、Archive 表、Console WebUI、ZIP Work Package 与生命周期命令保持
 退役。内容管理不在本仓库；Payload 实现冻结在 `archive/payload-cms`，本仓库 `main`
-不再构建或配置 Payload。在内容后端适配器落地前，公开读取命令 fail-closed。
+不再构建或配置 Payload。首版内容平台运行在独立的 `K4F7/cms`，契约见
+[`docs/specs/strapi-first-content-platform.md`](docs/specs/strapi-first-content-platform.md)。
+在内容后端适配器落地前，公开读取命令 fail-closed。
 
 插件当前无需内容后端配置项。
 

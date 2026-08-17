@@ -6,8 +6,9 @@ browser test command.
 
 Archive management does not live in this repository. The Payload application that
 previously lived under `apps/archive-payload/` is frozen on
-`archive/payload-cms` and is not built, tested, or deployed from `main`. A later
-content platform will own administration outside this plugin monorepo.
+`archive/payload-cms` and is not built, tested, or deployed from `main`. The
+first-version content platform lives in independent `K4F7/cms` and is specified
+in [`../specs/strapi-first-content-platform.md`](../specs/strapi-first-content-platform.md).
 
 The Koishi package only needs fail-closed QQ read coverage:
 
