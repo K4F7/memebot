@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -9,7 +10,9 @@ const {
   ArtifactContractError,
   discoverPublishablePlugins,
   runYarn,
+  packAndVerifySelectedArtifact,
   verifyExtractedArtifact,
+  verifyPackedTarball,
   withArtifactStaging,
 } = require('../scripts/check-plugin-artifacts.cjs') as {
   ACCESS_PACKAGE: string
@@ -24,7 +27,9 @@ const {
     }
   }>
   runYarn(args: string[], options?: Record<string, unknown>): { status: number | null, stdout: string }
+  packAndVerifySelectedArtifact(repositoryRoot: string, pluginDirectory: string, tarballPath: string): { name: string }
   verifyExtractedArtifact(extractedRoot: string, options?: Record<string, unknown>): { name: string }
+  verifyPackedTarball(tarballPath: string, options?: Record<string, unknown>): { name: string }
   withArtifactStaging<T>(fn: (stagingRoot: string) => T): T
 }
 
@@ -252,6 +257,39 @@ describe('artifact check command surface', () => {
     expect(readme).toContain('yarn check:plugin-artifacts')
     expect(readme).toMatch(/independent package boundary/i)
     expect(agents).toContain('yarn check:plugin-artifacts')
+  })
+
+  it('validates a selected packed tarball rather than the workspace directory', () => {
+    const staging = mkdtempSync(join(tmpdir(), 'memebot-selected-tarball-'))
+    fixtureRoots.push(staging)
+    const packageRoot = join(staging, 'package')
+    const artifact = validArtifact({
+      dependencies: { [ACCESS_PACKAGE]: '^0.1.0-alpha.2' },
+    })
+    mkdirSync(packageRoot, { recursive: true })
+    writeFileSync(join(packageRoot, 'package.json'), readFileSync(join(artifact, 'package.json')))
+    mkdirSync(join(packageRoot, 'lib'), { recursive: true })
+    writeFileSync(join(packageRoot, 'lib', 'index.js'), readFileSync(join(artifact, 'lib', 'index.js')))
+    writeFileSync(join(packageRoot, 'lib', 'index.d.ts'), readFileSync(join(artifact, 'lib', 'index.d.ts')))
+
+    const tarballPath = join(staging, 'selected.tgz')
+    const packed = spawnSync('tar', ['-czf', tarballPath, '-C', staging, 'package'], { encoding: 'utf8' })
+    expect(packed.status).toBe(0)
+
+    expect(verifyPackedTarball(tarballPath, {
+      pluginName: 'koishi-plugin-memebot-fixture',
+      pluginDirectory: 'plugins/memebot-fixture',
+      requiresAccess: true,
+      accessVersion: '0.1.0-alpha.2',
+    }).name).toBe('koishi-plugin-memebot-fixture')
+  })
+
+  it('rejects packing an unknown plugin directory as a selected artifact', () => {
+    expectContractFailure(
+      () => packAndVerifySelectedArtifact(repositoryRoot, 'plugins/memebot-missing', join(tmpdir(), 'missing.tgz')),
+      'plugins/memebot-missing',
+      'is not a publishable plugin package',
+    )
   })
 
   it('stages pack output outside the repository and deletes it afterwards', () => {

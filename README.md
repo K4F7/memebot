@@ -185,14 +185,30 @@ Vercel 部署属于 `K4F7/cms`，不再由本仓库触发。
 
 ## 发布插件
 
-在 GitHub Actions secrets 中配置 npm access token `NPM_TOKEN`。更新目标插件自己的
-`package.json` 版本，完成全仓验证后，创建并单独推送
-`<插件目录>-v<package.json 版本>` 格式的 tag：
+每个可发布插件都要在 npmjs.com 上把 GitHub Actions 配成 Trusted Publisher：
+owner `K4F7`、repository `memebot`、workflow 文件名恰好是 `publish.yml`。
+当前不使用 GitHub Environment；如果以后加上 Environment，npm 与
+`.github/workflows/publish.yml` 必须填写同一个准确名称。
+
+发布工作流只授予 `contents: read` 和 `id-token: write`，用 OIDC 向 npm 鉴权，
+不再使用长期 npm write token。发布前会确认 Node 不低于 22.14.0、npm CLI 不低于
+11.5.1，跑完整仓验收矩阵，再用 Yarn 把选中插件打成 tarball，通过
+`scripts/check-plugin-artifacts.cjs --pack-selected` 验收这个产物，最后用
+npm CLI 发布该 tarball（不是 workspace 目录，也不是 Yarn publish）。
+Trusted publishing 会自动附带 provenance。
+
+更新目标插件自己的 `package.json` 版本，把提交合入 `main` 并等待 CI 通过后，
+创建并单独推送 `<插件目录>-v<package.json 版本>` 格式的 tag：
 
 ```sh
-git tag memebot-faq-v0.1.1-alpha.4
-git push origin memebot-faq-v0.1.1-alpha.4
+git tag memebot-archive-v0.1.1-alpha.21
+git push origin memebot-archive-v0.1.1-alpha.21
 ```
 
-发布工作流会校验 tag 与插件版本，检查并构建整个仓库，然后只发布该 tag 对应的独立
-插件包。预发布版本使用首个后缀作为 npm dist-tag；稳定版本使用 `latest`。
+预发布版本使用首个后缀作为 npm dist-tag；稳定版本使用 `latest`。不要创建
+GitHub Release。
+
+若发布失败并提示无法鉴权或 trusted publisher mismatch，先核对 npm 上的
+owner / repository / workflow 是否恰好是 `K4F7` / `memebot` / `publish.yml`，
+工作流是否仍有 `id-token: write`，以及 job 是否跑在 GitHub-hosted runner。
+不要重新引入 `NPM_TOKEN` 或 `NODE_AUTH_TOKEN`。
