@@ -95,6 +95,7 @@ describe('Yakumo-managed verification matrix', () => {
       'tests/koishi-smoke.test.ts',
       'tests/local-app-smoke.test.ts',
       'tests/plugin-artifacts.test.ts',
+      'tests/publish-workflow.test.ts',
       'tests/readme.test.ts',
       'tests/verification-matrix.test.ts',
       'plugins/memebot-access/tests/access.test.ts',

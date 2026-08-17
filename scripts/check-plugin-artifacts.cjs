@@ -244,6 +244,61 @@ function withArtifactStaging(fn) {
   }
 }
 
+function verifyPackedTarball(tarballPath, options = {}) {
+  return withArtifactStaging((stagingRoot) => {
+    const extractDir = join(stagingRoot, 'extract')
+    extractTarball(tarballPath, extractDir)
+    const extractedRoot = join(extractDir, 'package')
+    if (!existsSync(extractedRoot)) {
+      throw artifactError(options.pluginName || 'package artifact', 'packed artifact is missing its extracted package contents')
+    }
+    return verifyExtractedArtifact(extractedRoot, options)
+  })
+}
+
+function packAndVerifySelectedArtifact(repositoryRoot, pluginDirectory, tarballPath) {
+  const plugins = discoverPublishablePlugins(repositoryRoot)
+  const plugin = plugins.find(entry => entry.directory === pluginDirectory)
+  if (!plugin) {
+    throw artifactError(pluginDirectory, 'is not a publishable plugin package')
+  }
+
+  const access = plugins.find(entry => entry.manifest.name === ACCESS_PACKAGE)
+  if (!access) {
+    throw artifactError(ACCESS_PACKAGE, 'must be present as the published Access package')
+  }
+
+  packPluginTarball(repositoryRoot, plugin.manifest.name, tarballPath)
+  return verifyPackedTarball(tarballPath, {
+    pluginName: plugin.manifest.name,
+    pluginDirectory: plugin.directory,
+    requiresAccess: Boolean(plugin.manifest.dependencies?.[ACCESS_PACKAGE]),
+    accessVersion: access.manifest.version,
+    moduleResolveRoots: [resolve(repositoryRoot, 'node_modules')],
+  })
+}
+
+function parseSelectedPackArgs(argv) {
+  const selectedIndex = argv.indexOf('--pack-selected')
+  const outIndex = argv.indexOf('--out')
+  if (selectedIndex === -1 && outIndex === -1) return null
+
+  const pluginDirectory = argv[selectedIndex + 1]
+  const tarballPath = argv[outIndex + 1]
+  if (
+    selectedIndex === -1
+    || outIndex === -1
+    || !pluginDirectory
+    || pluginDirectory.startsWith('--')
+    || !tarballPath
+    || tarballPath.startsWith('--')
+  ) {
+    throw artifactError('package artifact', 'selected packing requires --pack-selected <plugin-directory> and --out <tarball>')
+  }
+
+  return { pluginDirectory, tarballPath }
+}
+
 function verifyPublishablePlugins(repositoryRoot) {
   const plugins = discoverPublishablePlugins(repositoryRoot)
   const access = plugins.find(plugin => plugin.manifest.name === ACCESS_PACKAGE)
@@ -286,16 +341,25 @@ module.exports = {
   assertCanonicalRepository,
   discoverPublishablePlugins,
   loadExtractedPlugin,
+  packAndVerifySelectedArtifact,
+  parseSelectedPackArgs,
   runYarn,
   verifyExtractedArtifact,
+  verifyPackedTarball,
   verifyPublishablePlugins,
   withArtifactStaging,
 }
 
 if (require.main === module) {
   try {
-    const count = verifyPublishablePlugins(resolve(__dirname, '..'))
-    console.log(`Verified ${count} independent plugin package artifacts.`)
+    const selected = parseSelectedPackArgs(process.argv.slice(2))
+    if (selected) {
+      const manifest = packAndVerifySelectedArtifact(resolve(__dirname, '..'), selected.pluginDirectory, selected.tarballPath)
+      console.log(`Verified selected artifact ${manifest.name}.`)
+    } else {
+      const count = verifyPublishablePlugins(resolve(__dirname, '..'))
+      console.log(`Verified ${count} independent plugin package artifacts.`)
+    }
   } catch (cause) {
     console.error(cause instanceof Error ? cause.message : cause)
     process.exitCode = 1
