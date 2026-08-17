@@ -3,6 +3,11 @@
   "version": "0.1.0-alpha.2",
   "description": "自用，memebot 插件统一授权来源",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/K4F7/memebot.git",
+    "directory": "plugins/memebot-access"
+  },
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "files": [

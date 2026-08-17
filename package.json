@@ -7,6 +7,7 @@
   ],
   "scripts": {
     "build": "yarn workspaces foreach --all --topological-dev run build",
+    "check:plugin-artifacts": "node scripts/check-plugin-artifacts.cjs",
     "check:plugin-loads": "node scripts/check-plugin-loads.cjs",
     "smoke:local-app": "node scripts/smoke-local-app.cjs",
     "test": "vitest run",

@@ -3,6 +3,11 @@
   "version": "0.1.1-alpha.21",
   "description": "Archive QQ 只读适配器（内容后端未绑定时 fail-closed）",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/K4F7/memebot.git",
+    "directory": "plugins/memebot-archive"
+  },
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "files": [
