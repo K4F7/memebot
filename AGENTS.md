@@ -15,17 +15,23 @@ This public repository contains standalone Koishi plugins only. Publishable plug
 
 ## Verification
 
-Run plugin repository checks from the repository root:
+The authoritative verification matrix is `docs/testing/verification.md`.
+Yakumo orchestrates plugin workspace typecheck and build; repository-owned
+checks stay explicit. Run the full sequence from the repository root:
 
 ```sh
+yarn install --immutable
 yarn typecheck
+yarn test
 yarn build
+yarn check:plugin-loads
 yarn check:plugin-artifacts
 ```
 
 `yarn check:plugin-artifacts` is the independent package boundary: it packs every
 plugin with Yarn and validates the extracted tarball rather than the workspace
-directory.
+directory. Plugin entry loading and artifact checks run only after the explicit
+build. `yarn smoke:local-app` remains a manual local integration check.
 
 Run the local Koishi development instance separately:
 
@@ -38,7 +44,7 @@ yarn start
 
 - Versions are managed independently in each `plugins/memebot-*/package.json`.
 - Bump every package affected by a shared build or runtime change. Use semantic versioning.
-- Before releasing, run `yarn install --immutable`, `yarn typecheck`, `yarn build`, `yarn check:plugin-artifacts`, and the affected package tests from the repository root.
+- Before releasing, run the matrix in `docs/testing/verification.md`: `yarn install --immutable`, `yarn typecheck`, `yarn test`, `yarn build`, `yarn check:plugin-loads`, and `yarn check:plugin-artifacts`.
 - Push the release commit to `main` and wait for `.github/workflows/ci.yml` to pass.
 - Continue an existing prerelease channel by incrementing its numeric suffix, for example `0.1.1-alpha.0` to `0.1.1-alpha.1`. Check npm before choosing the next version.
 - Publish one plugin at a time by pushing a tag named `<plugin-directory>-v<version>`, for example `memebot-faq-v0.1.1-alpha.1`.
