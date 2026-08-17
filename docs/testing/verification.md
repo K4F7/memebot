@@ -23,7 +23,7 @@ yarn check:plugin-artifacts
 | Gate | Command | What it proves |
 | --- | --- | --- |
 | Immutable install | `yarn install --immutable` | The lockfile resolves every plugin workspace without network drift. |
-| Typecheck | `yarn typecheck` | Every plugin source, the Access Console client, and repository test sources typecheck. Typecheck does not emit `lib/` or `dist/` artifacts. |
+| Typecheck | `yarn typecheck` | Every plugin source, the Access Console client, and repository test sources typecheck. Plugin loading is a later gate and must not be treated as part of typecheck. |
 | Test | `yarn test` | Plugin unit tests, repository policy tests, the Koishi Mock harness, Archive fail-closed reads, artifact-contract tests, and local-app smoke helpers all pass. |
 | Build | `yarn build` | Yakumo compiles every plugin's declared runtime and type artifacts. Access still runs its Vite Console client build. |
 | Plugin entry loading | `yarn check:plugin-loads` | Each built CommonJS entry loads as a Koishi plugin with an `apply` function. This gate runs only after the explicit build. |

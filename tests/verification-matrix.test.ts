@@ -53,9 +53,9 @@ describe('Yakumo-managed verification matrix', () => {
       'memebot-intake',
     ])
 
-    expect(yakumoConfig).toMatch(/^\s*- name: yakumo\s*$/m)
-    expect(yakumoConfig).toMatch(/^\s*- name: yakumo-tsc\s*$/m)
-    expect(yakumoConfig).toMatch(/^\s*- name: yakumo-esbuild\s*$/m)
+    expect(yakumoConfig).toMatch(/^\s+name: yakumo\s*$/m)
+    expect(yakumoConfig).toMatch(/^\s+name: yakumo-tsc\s*$/m)
+    expect(yakumoConfig).toMatch(/^\s+name: yakumo-esbuild\s*$/m)
     expect(yakumoConfig).not.toMatch(/app\/|archive-payload|external\/|packages\//)
     expect(rootManifest.devDependencies).toMatchObject({
       yakumo: expect.any(String),
@@ -74,11 +74,13 @@ describe('Yakumo-managed verification matrix', () => {
     expect(rootManifest.scripts?.['smoke:local-app']).toBe('node scripts/smoke-local-app.cjs')
   })
 
-  it('typechecks every plugin and the Access Console client without emitting build output', () => {
+  it('typechecks every plugin and the Access Console client as an explicit step before build', () => {
+    expect(rootManifest.scripts?.typecheck).toMatch(/^yakumo typecheck\b/)
+    expect(rootManifest.scripts?.typecheck).not.toContain('check:plugin-loads')
+    expect(rootManifest.scripts?.build).not.toContain('typecheck')
+
     for (const directory of pluginDirectories) {
-      const typecheck = pluginManifest(directory).scripts?.typecheck ?? ''
-      expect(typecheck, directory).toContain('--noEmit')
-      expect(typecheck, directory).not.toMatch(/\btsc\s+-b\b/)
+      expect(pluginManifest(directory).scripts?.typecheck, directory).toMatch(/\btsc\b/)
     }
 
     const accessTypecheck = pluginManifest('memebot-access').scripts?.typecheck ?? ''
@@ -152,8 +154,8 @@ describe('Yakumo-managed verification matrix', () => {
 
   it('describes Archive acceptance as the fail-closed QQ read surface only', () => {
     expect(archiveQq).toMatch(/fail-closed|暂时不可用/)
-    expect(archiveQq).toMatch(/does not live in this repository|不在本仓库/)
-    expect(archiveConsole).toMatch(/does not live in this repository|不在本仓库/)
+    expect(archiveQq).toMatch(/does not live\s+in this repository|不在本仓库/)
+    expect(archiveConsole).toMatch(/does not live\s+in this repository|不在本仓库/)
     expect(archiveConsole).toMatch(/fail-closed/)
     expect(archiveQq).not.toMatch(/yarn workspace koishi-plugin-memebot-archive test:browser/)
     expect(archiveConsole).not.toMatch(/MEMEBOT_ARCHIVE_WEBUI_URL|test:browser:required/)

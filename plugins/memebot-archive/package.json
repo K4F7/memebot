@@ -22,7 +22,7 @@
   ],
   "scripts": {
     "build": "tsc -b",
-    "typecheck": "tsc -p tsconfig.json --pretty false --noEmit",
+    "typecheck": "tsc -b --pretty false",
     "test": "yarn build && vitest run"
   },
   "peerDependencies": {

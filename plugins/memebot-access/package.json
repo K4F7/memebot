@@ -24,7 +24,7 @@
   "scripts": {
     "build": "tsc -b && vite build",
     "build:client": "vite build",
-    "typecheck": "tsc -p tsconfig.json --pretty false --noEmit && tsc -p tsconfig.client.json --pretty false",
+    "typecheck": "tsc -b --pretty false && tsc -p tsconfig.client.json --pretty false",
     "test": "yarn build && vitest run"
   },
   "peerDependencies": {
