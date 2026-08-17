@@ -1,6 +1,9 @@
 # Issue tracker: GitHub
 
-Issues and PRDs for this repository live in GitHub Issues at `K4F7/memebot`. Use the `gh` CLI for all operations.
+Koishi plugin issues and PRDs live in GitHub Issues at `K4F7/memebot`.
+Strapi / Archive administration tickets live in [`K4F7/cms`](https://github.com/K4F7/cms/issues).
+Do not open new content-platform implementation issues here. Use the `gh` CLI
+for all operations.
 
 ## Conventions
 

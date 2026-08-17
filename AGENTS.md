@@ -47,7 +47,8 @@ yarn start
 
 ### Issue tracker
 
-Issues and PRDs are tracked in GitHub Issues for `K4F7/memebot`. See `docs/agents/issue-tracker.md`.
+Koishi plugin issues and PRDs are tracked in GitHub Issues for `K4F7/memebot`.
+Strapi / Archive administration tickets live in `K4F7/cms`. See `docs/agents/issue-tracker.md`.
 
 ### Agent ticket delivery
 

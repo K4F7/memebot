@@ -142,7 +142,7 @@ must not grow a Strapi application, Admin frontend, or Strapi client.
 - The primary deployment seam starts with an authenticated webhook request and
   ends with the externally observable health response and deployed revision.
   Tests do not assert private shell function structure.
-- [#69](https://github.com/K4F7/memebot/issues/69) is the required deployment
+- [cms#5](https://github.com/K4F7/cms/issues/5) is the required deployment
   prototype. It must capture reproducible configuration, browser network
   evidence, verification steps, and known limitations before production
   implementation tickets begin.
@@ -179,25 +179,25 @@ must not grow a Strapi application, Admin frontend, or Strapi client.
 ## Further Notes
 
 - This specification records the decision from
-  [#64](https://github.com/K4F7/memebot/issues/64) and consumes the research
+  [cms#3](https://github.com/K4F7/cms/issues/3) and consumes the research
   and contracts established by
-  [#62](https://github.com/K4F7/memebot/issues/62),
-  [#63](https://github.com/K4F7/memebot/issues/63), and
-  [#65](https://github.com/K4F7/memebot/issues/65).
+  [cms#1](https://github.com/K4F7/cms/issues/1),
+  [cms#2](https://github.com/K4F7/cms/issues/2), and
+  [cms#4](https://github.com/K4F7/cms/issues/4).
 - Research evidence remains on the recorded branches:
   `docs/research/strapi-admin-vps-split.md` at `508faca0f51d5e72363b7ed0c949c3713d0a33f0`,
   `docs/research/vps-runtime-constraints.md` at `fc24c5a68eb5d4d97704360166ff4826054bf4e3`,
   and `docs/research/cms-cicd-contract.md` at `b3d344ec67bc0c02e5dfe6d574ba21d2aa78b3e4`.
-- [#69](https://github.com/K4F7/memebot/issues/69) must complete before the
+- [cms#5](https://github.com/K4F7/cms/issues/5) must complete before the
   production implementation tickets begin.
 - Production implementation sequence:
-  [#79](https://github.com/K4F7/memebot/issues/79) login baseline,
-  [#81](https://github.com/K4F7/memebot/issues/81) Work authoring,
-  [#82](https://github.com/K4F7/memebot/issues/82) Media Item upload,
-  [#83](https://github.com/K4F7/memebot/issues/83) GHCR webhook release,
-  and [#84](https://github.com/K4F7/memebot/issues/84) production-shaped
+  [cms#7](https://github.com/K4F7/cms/issues/7) login baseline,
+  [cms#8](https://github.com/K4F7/cms/issues/8) Work authoring,
+  [cms#9](https://github.com/K4F7/cms/issues/9) Media Item upload,
+  [cms#10](https://github.com/K4F7/cms/issues/10) GHCR webhook release,
+  and [cms#11](https://github.com/K4F7/cms/issues/11) production-shaped
   acceptance. Koishi read binding remains
-  [#70](https://github.com/K4F7/memebot/issues/70).
+  [memebot#70](https://github.com/K4F7/memebot/issues/70).
 - The current VPS has one root filesystem. Local persistence protects against
   container replacement only and must not be described as disaster recovery.
 - The historical Payload/Vercel/Neon/R2 ADRs remain superseded as runtime
