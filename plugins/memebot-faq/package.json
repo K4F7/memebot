@@ -3,6 +3,11 @@
   "version": "0.1.1-alpha.4",
   "description": "自用，常见问题菜单与查询插件",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/K4F7/memebot.git",
+    "directory": "plugins/memebot-faq"
+  },
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "files": [

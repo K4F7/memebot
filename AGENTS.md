@@ -20,7 +20,12 @@ Run plugin repository checks from the repository root:
 ```sh
 yarn typecheck
 yarn build
+yarn check:plugin-artifacts
 ```
+
+`yarn check:plugin-artifacts` is the independent package boundary: it packs every
+plugin with Yarn and validates the extracted tarball rather than the workspace
+directory.
 
 Run the local Koishi development instance separately:
 
@@ -33,7 +38,7 @@ yarn start
 
 - Versions are managed independently in each `plugins/memebot-*/package.json`.
 - Bump every package affected by a shared build or runtime change. Use semantic versioning.
-- Before releasing, run `yarn install --immutable`, `yarn typecheck`, `yarn build`, and the affected package tests from the repository root.
+- Before releasing, run `yarn install --immutable`, `yarn typecheck`, `yarn build`, `yarn check:plugin-artifacts`, and the affected package tests from the repository root.
 - Push the release commit to `main` and wait for `.github/workflows/ci.yml` to pass.
 - Continue an existing prerelease channel by incrementing its numeric suffix, for example `0.1.1-alpha.0` to `0.1.1-alpha.1`. Check npm before choosing the next version.
 - Publish one plugin at a time by pushing a tag named `<plugin-directory>-v<version>`, for example `memebot-faq-v0.1.1-alpha.1`.
