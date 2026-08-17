@@ -1,17 +1,9 @@
-# Archive staging acceptance (retired VPS runbook)
+# Archive staging operating note
 
-This file is retained as a historical record for issue #52. The VPS, SSH, GHCR, and staging
-workflows it described have been removed and must not be recreated for production.
+Historical Payload VPS staging notes no longer apply on `main`. The frozen
+Payload application and its staging smoke path live on `archive/payload-cms` at
+`9804752f2d7e6d5957a5ce47c8872750bde988ce`.
 
-The current production boundary is Vercel Git Integration + Neon PostgreSQL + private Cloudflare
-R2. Use [`archive-vercel.md`](archive-vercel.md) for the deployment and acceptance path. The
-deterministic repository checks remain:
-
-```sh
-corepack yarn typecheck
-corepack yarn test
-corepack yarn build
-```
-
-The old Docker/Compose files under `apps/archive-payload/deploy/` are retained only for local or
-manual compatibility and are not a staging deployment mechanism.
+This repository no longer starts Payload or a PostgreSQL service for Archive.
+QQ read verification is the fail-closed command surface in
+[`archive-qq-shortcuts.md`](archive-qq-shortcuts.md).

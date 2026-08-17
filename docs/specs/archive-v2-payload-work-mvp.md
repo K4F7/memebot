@@ -1,5 +1,9 @@
 # Archive v2: Payload Work media MVP and Koishi read adapter
 
+> Historical record. Payload no longer lives on `main`. The frozen implementation is
+> `archive/payload-cms` at `9804752f2d7e6d5957a5ce47c8872750bde988ce`. Current operator
+> docs describe Archive as a fail-closed QQ read plugin with no content backend.
+
 ## Problem Statement
 
 Archive administration is currently coupled to Koishi's database, local attachment directory, Console WebUI, and QQ management flows. The current Work model assumes one ZIP Work Package, which does not fit the desired workflow of managing individual images and PDFs in a PayloadCMS administration surface.

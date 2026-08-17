@@ -13,9 +13,9 @@ Access 本身不依赖任何业务插件，业务插件之间也不互相依赖�
 | `koishi-plugin-memebot-intake` | 为投稿、反馈、建议分别配置 QQ Notification Group/用户目标和附件目录 | 在 QQ 中开始收集并连续发送文字或附件 | 保存 Intake Draft，提交后生成稳定编号并投递管理通知；失败通知自动重试 | 引用管理通知认领、转交、变更状态、关闭或重开 | 用户获得 `投稿#N`、`反馈#N` 或 `建议#N`，并可查询自己的记录 |
 | `koishi-plugin-memebot-faq` | 配置公开列表页大小，并加载 Access | 在 QQ 中分页浏览或按 `#N` 查询 | 只向普通成员展示公开条目 | 新增、编辑、隐藏、重新公开；已隐藏条目才可永久删除 | 用户看到稳定的 FAQ 编号、问题和答案 |
 | `koishi-plugin-memebot-activity` | 配置 QQ 用户/Notification Group 通知目标，并加载 Access | 在 QQ 中查看近期活动或按 `#N` 查询 | 根据开始、结束时间计算近期与历史状态 | 引导新增、编辑、取消，并选择仅保存或同时通知 | 用户看到活动时间、状态、地点、描述和链接；被选中的 QQ 目标收到通知 |
-| `koishi-plugin-memebot-archive` | 配置 Payload Archive URL、machine credential 和请求超时 | 在 QQ 中搜索或按 `W<N>` 获取 Work | 通过版本化 Payload API 读取有序图片/PDF Media，使用短期签名访问 | Payload Admin 是唯一 Archive 管理入口；QQ 不提供写入或运维命令 | 用户获得 Work 详情与有序 Media；Payload 负责内容管理和私有对象 |
+| `koishi-plugin-memebot-archive` | 无需内容后端配置 | 在 QQ 中搜索或按 `W<N>` 获取 Work | 内容后端尚未绑定，命令直接返回暂时不可用 | 本仓库不再提供 Archive 管理入口；QQ 不提供写入或运维命令 | 用户收到暂时不可用结果；图片/PDF 投递是后续适配器恢复的只读结果 |
 
-Access 为三个受保护业务插件提供同一套授权规则；Archive v2 仅提供 Payload 公开读取，
+Access 为三个受保护业务插件提供同一套授权规则；Archive 仅提供公开 QQ 读取，
 不属于 Access 的运行时消费者。显式记录的 QQ 用户或 Koishi authority 不低于
 4 的用户是 Plugin Administrator。Management Group 只限制群聊中的状态变更位置，不会
 把群成员变成管理员；管理员只读不受位置限制，私聊状态变更仍要求管理员身份，空
@@ -100,24 +100,17 @@ QQ 联系提交者，Bot 不承载管理员与提交者之间的回复会话。
 
 ## Archive
 
-Archive v2 由独立的 Payload 应用管理内容，`memebot-archive` 只是 QQ 的只读适配器。
-它不注入 Koishi Database、Console 或 `memebot-access`，也不创建 Archive 表、写入本地
-附件、上传 ZIP、维护清单或执行生命周期操作。Payload 的 PostgreSQL 元数据和私有 R2
-Media 是唯一内容权威。
+`memebot-archive` 是 QQ 的只读 Archive 插件，目前没有内容后端。它不注入 Koishi
+Database、Console 或 `memebot-access`，也不创建 Archive 表、写入本地附件、上传 ZIP、
+维护清单或执行生命周期操作。Archive 管理不再位于本仓库。
 
-主要配置位于插件的 `payload` 对象：
-
-- `payload.baseUrl`：Payload 站点根 URL，或 `/api/archive/v1` API 根 URL。
-- `payload.serviceToken`：专用 machine credential；不是 Payload 管理员 cookie/JWT。
-- `payload.timeoutMs`：远程请求超时，默认 10 秒。
-
-Payload 通过 `GET /api/archive/v1/works?query=&author=` 搜索 Work，通过
-`GET /api/archive/v1/works/:archiveId` 获取详情，并为每个图片/PDF Media 返回短期签名
-访问。Work 只有在管理员显式发布完整版本，且发布快照包含至少一个指向未撤回 Media 的
-有效 WorkMedia manifest 后才可读；草稿和未发布编辑不会出现在读 API。Media 按发布快照
-中的顺序投递，单个 Media 失败不会隐藏其他项。
+插件无需 Payload URL、machine credential 或其他内容后端配置。在后续 Strapi 读取适配器
+绑定 Archive Read Contract 之前，已注册的 QQ 只读命令返回稳定的暂时不可用结果；该结果
+与“Work 不存在”不同。图片和 PDF 投递仍是文档化的未来只读结果。
 
 ### QQ 只读命令
+
+当前没有内容后端，下列命令均返回暂时不可用；图片和 PDF 投递是后续适配器恢复的只读结果。
 
 - `/archive.search works [查询]`：搜索 Work。
 - `/archive.works [查询]`：搜索 Work 的兼容快捷写法。
@@ -140,7 +133,7 @@ yarn check:plugin-loads
 ```
 
 本地 Koishi 集成实例位于被 Git 忽略的 `app/` 独立 Yarn 项目。它通过 `file:` 依赖加载
-五个插件，并配置 Database、Console 与 Sandbox；Archive 在其中只作为 Payload 只读适配器。
+五个插件，并配置 Database、Console 与 Sandbox；Archive 无需内容后端配置即可加载。
 
 ```sh
 # 首次创建（使用官方 Koishi scaffold）
@@ -167,21 +160,14 @@ yarn start
 ```
 
 在 Sandbox 中分别以成员和 Plugin Administrator 身份走通 Access、Intake、FAQ 与 Activity
-命令；Archive 的 QQ 验收只覆盖 Payload Work 搜索、详情和 Media 投递。Payload Admin 的
-统一 Work 编辑器验收覆盖草稿保存、显式发布、发布后编辑隔离、失败发布保留旧版本和可重试
-草稿，以及 Media 顺序、撤回、草稿媒体清理和禁止已发布媒体物理删除；这些检查在
-`apps/archive-payload/` 独立执行。
+命令；Archive 的 QQ 验收只覆盖命令仍已注册，并在没有内容后端时返回暂时不可用。
 `app/` 的配置、数据库、日志、缓存、环境文件和依赖均不得提交或发布。
 `yarn smoke:local-app` 会先校验五个本地依赖与必需服务配置，再启动实例、探测 Console，
 并把启动日志中的可见失败作为非零退出；缺失 `app/`、端口被占用或服务不可用都不是成功。
 
-默认测试完全使用内存或 fake HTTP Payload 边界，不访问生产数据库或真实 R2。Payload 应用
-的部署配置和运行时凭据只在 `apps/archive-payload/` 的独立环境中提供。
-
-Archive 的当前 Vercel 验收路径见
-[`docs/testing/archive-vercel.md`](docs/testing/archive-vercel.md)。旧 VPS staging 黑盒运行册
-仅作为历史记录保留在 [`docs/testing/archive-staging.md`](docs/testing/archive-staging.md)，不
-再是可执行的部署路径。
+默认测试不访问生产数据库、真实对象存储或任何内容后端。Archive 管理验收见
+[`docs/testing/archive-console-browser.md`](docs/testing/archive-console-browser.md)；
+QQ 只读验收见 [`docs/testing/archive-qq-shortcuts.md`](docs/testing/archive-qq-shortcuts.md)。
 
 ## 发布插件
 

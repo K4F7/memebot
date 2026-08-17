@@ -94,23 +94,17 @@ describe('standalone plugin command smoke behaviors', () => {
     await expect(administrator.receive('intake')).resolves.toEqual(['暂无记录。'])
   })
 
-  it('loads Archive without Access and exposes only the remote read contract', async () => {
-    const previousFetch = globalThis.fetch
-    globalThis.fetch = (async () => new Response(JSON.stringify({ data: [], total: 0 }), {
-      headers: { 'content-type': 'application/json' },
-    })) as typeof fetch
-    try {
-      const harness = await createKoishiTestHarness(archive, {
-        payload: { baseUrl: 'https://archive.test', serviceToken: 'machine-token', timeoutMs: 500 },
-      })
-      harnesses.push(harness)
-      const member = await harness.client({ userId: '10002', channelId: '20001' })
+  it('loads Archive without Access or Payload configuration and fail-closes read commands', async () => {
+    const harness = await createKoishiTestHarness(archive, {})
+    harnesses.push(harness)
+    const member = await harness.client({ userId: '10002', channelId: '20001' })
+    const unavailable = ['Archive 服务暂时不可用，请稍后重试。']
 
-      await expect(member.receive('archive.search works')).resolves.toEqual(['没有找到 Work。'])
-      await expect(member.receive('archive.issue-publish {}')).resolves.toEqual([])
-    } finally {
-      globalThis.fetch = previousFetch
-    }
+    await expect(member.receive('archive.search works')).resolves.toEqual(unavailable)
+    await expect(member.receive('archive.works')).resolves.toEqual(unavailable)
+    await expect(member.receive('archive.work-query')).resolves.toEqual(unavailable)
+    await expect(member.receive('archive W1')).resolves.toEqual(unavailable)
+    await expect(member.receive('archive.issue-publish {}')).resolves.toEqual([])
   })
 
   it('keeps Activity public while Access separates administrator reads from writes', async () => {
