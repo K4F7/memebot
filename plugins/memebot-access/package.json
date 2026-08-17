@@ -23,6 +23,7 @@
   ],
   "scripts": {
     "build": "tsc -b && vite build",
+    "build:client": "vite build",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.client.json --pretty false",
     "test": "yarn build && vitest run"
   },

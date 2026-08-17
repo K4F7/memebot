@@ -1,0 +1,19 @@
+- id: e7dp1c
+  name: yakumo
+  config:
+    pipeline:
+      build:
+        - tsc
+        - run -- build:client
+      typecheck:
+        - >-
+          run memebot-access memebot-activity memebot-archive memebot-faq
+          memebot-intake -- typecheck
+      clean:
+        - tsc --clean
+- id: rc1u1m
+  name: yakumo-esbuild
+- id: ye3v8q
+  name: yakumo-tsc
+- id: 19lji3
+  name: yakumo/run

@@ -52,8 +52,10 @@ jobs:
           exit 1
 
       - run: yarn typecheck
+      - run: yarn test
       - run: yarn build
       - run: yarn check:plugin-loads
+      - run: yarn check:plugin-artifacts
 
       - name: Publish to npm
         working-directory: ${{ steps.plugin.outputs.directory }}

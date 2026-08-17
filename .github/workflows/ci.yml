@@ -16,6 +16,7 @@ jobs:
       - run: corepack enable
       - run: yarn install --immutable
       - run: yarn typecheck
-      - run: yarn check:plugin-loads
       - run: yarn test
       - run: yarn build
+      - run: yarn check:plugin-loads
+      - run: yarn check:plugin-artifacts

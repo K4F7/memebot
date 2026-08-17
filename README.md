@@ -124,17 +124,20 @@ Appearance、ZIP Work Package 和旧 Koishi Archive WebUI 属于已退役或后�
 
 ## 本地开发与验收
 
-仓库根目录负责 Access 与四个业务插件的构建和测试。`yarn check:plugin-artifacts`
-是独立包边界（independent package boundary）：它用 Yarn 把每个插件打成 tarball，
-在隔离的临时目录里检查解包后的产物（而不是源码 workspace），并在结束后清掉这些
-文件。该检查拒绝缺失的入口和类型声明、残留的 `workspace:` 依赖，以及无法作为
-Koishi 插件加载的 CommonJS 入口。
+仓库根目录负责 Access 与四个业务插件的构建和测试。Yakumo 发现 `plugins/*`
+workspace 并编排跨包 typecheck/build；仓库级测试、插件入口加载和产物验收仍是
+显式检查。权威验收矩阵见
+[`docs/testing/verification.md`](docs/testing/verification.md)。
+`yarn check:plugin-artifacts` 是独立包边界（independent package boundary）：它用
+Yarn 把每个插件打成 tarball，在隔离的临时目录里检查解包后的产物（而不是源码
+workspace），并在结束后清掉这些文件。该检查拒绝缺失的入口和类型声明、残留的
+`workspace:` 依赖，以及无法作为 Koishi 插件加载的 CommonJS 入口。
 
 ```sh
 yarn install --immutable
 yarn typecheck
-yarn build
 yarn test
+yarn build
 yarn check:plugin-loads
 yarn check:plugin-artifacts
 ```
