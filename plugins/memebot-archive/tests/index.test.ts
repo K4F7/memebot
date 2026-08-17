@@ -35,9 +35,7 @@ function commandHarness() {
   return { ctx: { command }, handlers, names }
 }
 
-const config = {
-  payload: { baseUrl: 'https://archive.test', serviceToken: 'machine-token', timeoutMs: 500 },
-}
+const UNAVAILABLE = 'Archive 服务暂时不可用，请稍后重试。'
 
 describe('Archive read-only plugin boundary', () => {
   it('declares no runtime service injection', () => {
@@ -47,9 +45,8 @@ describe('Archive read-only plugin boundary', () => {
   it('does not require database, Console, or Access and registers only read commands', () => {
     const harness = commandHarness()
     const get = vi.fn(() => { throw new Error('legacy service lookup') })
-    const result = apply({ ...harness.ctx, get, model: { extend: vi.fn() } } as any, config as any)
+    apply({ ...harness.ctx, get, model: { extend: vi.fn() } } as any, {} as any)
 
-    expect(result).toBeDefined()
     expect(get).not.toHaveBeenCalled()
     expect(harness.names).toEqual([
       'archive [id:text]',
@@ -60,33 +57,29 @@ describe('Archive read-only plugin boundary', () => {
     expect(harness.names.some(name => /publish|edit|rm|remove|restore|retry|issue|paper|console/i.test(name))).toBe(false)
   })
 
-  it('keeps malformed or missing Payload configuration as a temporary-unavailable read result', async () => {
+  it('returns the temporary-unavailable member message when no content backend is configured', async () => {
     const harness = commandHarness()
     apply(harness.ctx as any, {} as any)
+    const root = harness.handlers.get('archive [id:text]')!
     const search = harness.handlers.get('archive [id:text].search <kind:string> [query:text]')!
+    const works = harness.handlers.get('archive [id:text].works [query:text]')!
+    const workQuery = harness.handlers.get('archive [id:text].work-query [author:text] [query:text]')!
 
-    await expect(search({}, 'works')).resolves.toBe('Archive 服务暂时不可用，请稍后重试。')
+    await expect(root({}, 'W1')).resolves.toBe(UNAVAILABLE)
+    await expect(search({}, 'works')).resolves.toBe(UNAVAILABLE)
+    await expect(search({}, 'works', 'example')).resolves.toBe(UNAVAILABLE)
+    await expect(works({}, 'example')).resolves.toBe(UNAVAILABLE)
+    await expect(workQuery({}, 'Alice', 'example')).resolves.toBe(UNAVAILABLE)
   })
 
-  it('maps the canonical Payload search response through the public command', async () => {
-    const requests: Request[] = []
-    vi.stubGlobal('fetch', (async (input, init) => {
-      const request = new Request(input, init)
-      requests.push(request)
-      return new Response(JSON.stringify({ data: [{ id: 'W1', title: 'Example', author: 'Alice' }], total: 1 }), {
-        headers: { 'content-type': 'application/json' },
-      })
-    }) as typeof fetch)
-    try {
-      const harness = commandHarness()
-      apply(harness.ctx as any, config as any)
-      const search = harness.handlers.get('archive [id:text].search <kind:string> [query:text]')!
+  it('keeps unsupported kind and id validation distinct from backend unavailability', async () => {
+    const harness = commandHarness()
+    apply(harness.ctx as any, {} as any)
+    const root = harness.handlers.get('archive [id:text]')!
+    const search = harness.handlers.get('archive [id:text].search <kind:string> [query:text]')!
 
-      await expect(search({}, 'works', 'example')).resolves.toBe('W1 Alice - Example')
-      expect(requests[0].headers.get('authorization')).toBe('Bearer machine-token')
-      expect(requests[0].url).toBe('https://archive.test/api/archive/v1/works?query=example')
-    } finally {
-      vi.unstubAllGlobals()
-    }
+    await expect(root({})).resolves.toBe('请使用 /archive search works [查询] 或 /archive W<n>。')
+    await expect(root({}, 'paper-1')).resolves.toBe('当前 Archive 仅支持 Work W<n>。')
+    await expect(search({}, 'paper')).resolves.toBe('当前 Archive 仅支持 Work 查询。')
   })
 })
