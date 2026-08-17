@@ -201,8 +201,24 @@ function verifyExtractedArtifact(extractedRoot, options = {}) {
   return manifest
 }
 
+function quoteCmdArgument(value) {
+  return `"${String(value).replace(/"/g, '""')}"`
+}
+
+function runYarn(args, options) {
+  if (process.platform === 'win32') {
+    return spawnSync(`yarn ${args.map(quoteCmdArgument).join(' ')}`, {
+      ...options,
+      shell: true,
+      windowsHide: true,
+    })
+  }
+
+  return spawnSync('yarn', args, options)
+}
+
 function packPluginTarball(repositoryRoot, workspaceName, tarballPath) {
-  const result = spawnSync('yarn', ['workspace', workspaceName, 'pack', '--out', tarballPath], {
+  const result = runYarn(['workspace', workspaceName, 'pack', '--out', tarballPath], {
     cwd: repositoryRoot,
     encoding: 'utf8',
   })
@@ -270,6 +286,7 @@ module.exports = {
   assertCanonicalRepository,
   discoverPublishablePlugins,
   loadExtractedPlugin,
+  runYarn,
   verifyExtractedArtifact,
   verifyPublishablePlugins,
   withArtifactStaging,

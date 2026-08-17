@@ -8,6 +8,7 @@ const {
   ACCESS_PACKAGE,
   ArtifactContractError,
   discoverPublishablePlugins,
+  runYarn,
   verifyExtractedArtifact,
   withArtifactStaging,
 } = require('../scripts/check-plugin-artifacts.cjs') as {
@@ -22,6 +23,7 @@ const {
       repository?: { type?: string, url?: string, directory?: string }
     }
   }>
+  runYarn(args: string[], options?: Record<string, unknown>): { status: number | null, stdout: string }
   verifyExtractedArtifact(extractedRoot: string, options?: Record<string, unknown>): { name: string }
   withArtifactStaging<T>(fn: (stagingRoot: string) => T): T
 }
@@ -261,5 +263,11 @@ describe('artifact check command surface', () => {
     })
 
     expect(() => readFileSync(join(created, 'probe.tgz'))).toThrow()
+  })
+
+  it('can invoke Yarn on this platform so later artifact packing is not a spawn miss', () => {
+    const result = runYarn(['--version'], { encoding: 'utf8' })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toMatch(/\d+\.\d+/)
   })
 })
