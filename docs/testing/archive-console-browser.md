@@ -4,10 +4,10 @@ The former Koishi Archive Console browser suite is retired. The `memebot-archive
 package no longer ships a Console entry, management listeners, Vue client, or
 browser test command.
 
-Archive management does not live in this repository. The Payload application that
-previously lived under `apps/archive-payload/` is frozen on
-`archive/payload-cms` and is not built, tested, or deployed from `main`. A later
-content platform will own administration outside this plugin monorepo.
+Archive management does not live in this repository. The frozen Payload tree
+remains on `archive/payload-cms` and is not built, tested, or deployed from
+`main`. The first-version content platform lives in independent `K4F7/cms`;
+Vercel Admin deployment is owned by that repository, not this plugin monorepo.
 
 The Koishi package only needs fail-closed QQ read coverage:
 
