@@ -104,7 +104,8 @@ QQ 联系提交者，Bot 不承载管理员与提交者之间的回复会话。
 `memebot-access`，也不创建 Archive 表、写入本地附件、上传 ZIP、维护清单或执行生命周期
 操作。旧本地附件库、Archive 表、Console WebUI、ZIP Work Package 与生命周期命令保持
 退役。内容管理不在本仓库；Payload 实现冻结在 `archive/payload-cms`，本仓库 `main`
-不再构建或配置 Payload。在内容后端适配器落地前，公开读取命令 fail-closed。
+不再构建、配置或部署 Payload。首版内容平台运行在独立的 `K4F7/cms`。在内容后端适配器
+落地前，公开读取命令 fail-closed。
 
 插件当前无需内容后端配置项。
 
@@ -179,10 +180,8 @@ yarn start
 
 默认测试不访问生产数据库、真实 R2 或任何内容平台。Archive 的当前 QQ 验收路径见
 [`docs/testing/archive-qq-shortcuts.md`](docs/testing/archive-qq-shortcuts.md)；管理面说明见
-[`docs/testing/archive-console-browser.md`](docs/testing/archive-console-browser.md)。历史
-Payload 部署与 staging 记录仅作 provenance 保留在
-[`docs/testing/archive-vercel.md`](docs/testing/archive-vercel.md) 与
-[`docs/testing/archive-staging.md`](docs/testing/archive-staging.md)。
+[`docs/testing/archive-console-browser.md`](docs/testing/archive-console-browser.md)。
+Vercel 部署属于 `K4F7/cms`，不再由本仓库触发。
 
 ## 发布插件
 
