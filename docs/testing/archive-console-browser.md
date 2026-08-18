@@ -9,7 +9,7 @@ remains on `archive/payload-cms` and is not built, tested, or deployed from
 `main`. The first-version content platform lives in independent `K4F7/cms`;
 Vercel Admin deployment is owned by that repository, not this plugin monorepo.
 
-The Koishi package only needs fail-closed QQ read coverage:
+The Koishi package needs fail-closed QQ read coverage when unconfigured, and Mock contract-read coverage when origin and token are set:
 
 ```sh
 corepack yarn workspace koishi-plugin-memebot-archive test

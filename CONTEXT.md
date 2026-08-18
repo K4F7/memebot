@@ -74,7 +74,7 @@ A stable public reference assigned to one newspaper issue or work. It remains as
 
 ## Archive Read Contract
 
-The unbound machine-facing boundary through which Koishi will search Works, retrieve Work details, and request protected Media Items once a content backend is configured. It is separate from any content-platform administration surface and is not currently bound on the Koishi mainline.
+The machine-facing `/api/archive/v1` boundary through which Koishi searches Works, retrieves Work details, and requests protected Media Items. `memebot-archive` binds this contract when origin and machine credential are configured. It is separate from any content-platform administration surface.
 
 ## Archive Administrator
 

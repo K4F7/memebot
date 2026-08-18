@@ -13,7 +13,7 @@ Access 本身不依赖任何业务插件，业务插件之间也不互相依赖�
 | `koishi-plugin-memebot-intake` | 为投稿、反馈、建议分别配置 QQ Notification Group/用户目标和附件目录 | 在 QQ 中开始收集并连续发送文字或附件 | 保存 Intake Draft，提交后生成稳定编号并投递管理通知；失败通知自动重试 | 引用管理通知认领、转交、变更状态、关闭或重开 | 用户获得 `投稿#N`、`反馈#N` 或 `建议#N`，并可查询自己的记录 |
 | `koishi-plugin-memebot-faq` | 配置公开列表页大小，并加载 Access | 在 QQ 中分页浏览或按 `#N` 查询 | 只向普通成员展示公开条目 | 新增、编辑、隐藏、重新公开；已隐藏条目才可永久删除 | 用户看到稳定的 FAQ 编号、问题和答案 |
 | `koishi-plugin-memebot-activity` | 配置 QQ 用户/Notification Group 通知目标，并加载 Access | 在 QQ 中查看近期活动或按 `#N` 查询 | 根据开始、结束时间计算近期与历史状态 | 引导新增、编辑、取消，并选择仅保存或同时通知 | 用户看到活动时间、状态、地点、描述和链接；被选中的 QQ 目标收到通知 |
-| `koishi-plugin-memebot-archive` | 无需内容后端配置；插件保持可安装 | 在 QQ 中搜索或按 `W<N>` 获取 Work | 内容后端未绑定时 fail-closed，返回暂时不可用 | Archive 管理不在本仓库；QQ 不提供写入或运维命令 | 成员收到暂时不可用结果；后续适配器可恢复有序图片/PDF 投递 |
+| `koishi-plugin-memebot-archive` | 配置 Archive Read Contract origin 与机器凭证；缺一则 fail-closed | 在 QQ 中搜索或按 `W<N>` 获取 Work | 已配置时读取 /api/archive/v1 并投递有序图片/PDF；未配置时 fail-closed | Archive 管理不在本仓库；QQ 不提供写入或运维命令 | 搜索返回 Archive Identifier、标题、作者与精确 total；详情发送标题/作者/摘要与有序媒体 |
 
 Access 为三个受保护业务插件提供同一套授权规则；Archive 仅提供公开 QQ 读取命令，
 不属于 Access 的运行时消费者。显式记录的 QQ 用户或 Koishi authority 不低于
@@ -104,21 +104,30 @@ QQ 联系提交者，Bot 不承载管理员与提交者之间的回复会话。
 `memebot-access`，也不创建 Archive 表、写入本地附件、上传 ZIP、维护清单或执行生命周期
 操作。旧本地附件库、Archive 表、Console WebUI、ZIP Work Package 与生命周期命令保持
 退役。内容管理不在本仓库；Payload 实现冻结在 `archive/payload-cms`，本仓库 `main`
-不再构建、配置或部署 Payload。首版内容平台运行在独立的 `K4F7/cms`。在内容后端适配器
-落地前，公开读取命令 fail-closed。
+不再构建、配置或部署 Payload。首版内容平台运行在独立的 `K4F7/cms`。插件只调用
+Archive Read Contract（`GET /api/archive/v1/works`、`GET /api/archive/v1/works/:archiveId`、
+`GET /api/archive/v1/media/:mediaId`），不调用内容平台原生 REST 或管理面。
 
-插件当前无需内容后端配置项。
+可选配置项：
+
+- `origin`：Archive 读取契约服务地址（会去掉尾部斜杠）。
+- `token`：Archive 读取契约机器凭证。只经配置注入，不会写入日志或成员可见消息。
+
+任一缺失时保持 fail-closed，公开读取命令返回
+`Archive 服务暂时不可用，请稍后重试。`。
 
 ### QQ 只读命令
 
-- `/archive.search works [查询]`：搜索 Work。
-- `/archive.works [查询]`：搜索 Work 的兼容快捷写法。
-- `/archive.work-query [作者] [查询]`：按作者或文本搜索 Work。
-- `/archive W1`：获取 Work 详情及有序图片/PDF Media。
+- `/archive.search works [查询]`：按 `query=` 搜索 Work。
+- `/archive.works [查询]`：搜索 Work 的兼容快捷写法，同样使用 `query=`。
+- `/archive.work-query [作者] [查询]`：按 `author=` 与 `query=` 搜索 Work。
+- `/archive W1`：按 Archive Identifier `W1` 获取 Work 详情及有序图片/PDF Media。
 
-在没有内容后端时，上述命令返回 `Archive 服务暂时不可用，请稍后重试。`。后续适配器
-绑定 Archive Read Contract 后，成员可见结果应恢复为 Work 详情与有序图片/PDF 投递；
-未知或不可读 Work 须与缺失后端保持区分，不可把配置失败复用为 `Work 不存在。`。
+绑定契约后，搜索返回 Archive Identifier、标题、作者和精确 `total`；空搜索是包含
+`共 0 条` 的短消息，不是 `Work 不存在。`。详情返回标题、作者、摘要，并按清单顺序
+发送图片；PDF 以文件发送，caption 随对应媒体展示。契约 404 返回 `Work 不存在。`；
+未配置、网络失败、401/403 与 5xx 仍返回暂时不可用，不复用“不存在”文案。单个媒体
+下载或发送失败时，其余媒体照常发送，并对失败项给出明确提示。
 
 QQ 不提供 Archive 上传、编辑、删除、恢复、备份重试或其他管理命令；Paper、Publication
 Appearance、ZIP Work Package 和旧 Koishi Archive WebUI 属于已退役或后续独立范围。
@@ -144,8 +153,7 @@ yarn check:plugin-artifacts
 ```
 
 本地 Koishi 集成实例位于被 Git 忽略的 `app/` 独立 Yarn 项目。它通过 `file:` 依赖加载
-五个插件，并配置 Database、Console 与 Sandbox；Archive 在其中无需 Payload 或其它内容
-后端配置即可加载，读取命令保持 fail-closed。
+五个插件，并配置 Database、Console 与 Sandbox；Archive 在未配置 origin/token 时即可加载，读取命令保持 fail-closed。
 
 ```sh
 # 首次创建（使用官方 Koishi scaffold）

@@ -1,25 +1,39 @@
 # Archive QQ read verification
 
-`memebot-archive` keeps only the public QQ read command surface. No content
-backend is configured on the Koishi mainline; Archive management does not live
-in this repository. QQ does not upload, edit, remove, restore, or retry Archive
-records.
+`memebot-archive` keeps only the public QQ read command surface. Archive
+management does not live in this repository. QQ does not upload, edit, remove,
+restore, or retry Archive records.
 
-Verify the fail-closed surface:
+When `origin` or `token` is missing, the plugin stays fail-closed and the four
+read commands return `Archive 服务暂时不可用，请稍后重试。`.
 
-1. `/archive.search works [query]` remains registered and returns the temporary-unavailable member message.
-2. `/archive.works [query]` remains an equivalent Work search shortcut with the same unavailable result.
-3. `/archive.work-query [author] [query]` remains registered with the same unavailable result.
-4. `/archive W<n>` remains registered with the same unavailable result.
-5. Image and PDF delivery remains the documented future read result once a later adapter binds the Archive Read Contract.
-6. An unknown or unreadable Work must stay distinct from a missing backend once a backend exists later; do not reuse `Work 不存在。` for configuration failure.
+When both are configured, Koishi calls only `GET /api/archive/v1/works`,
+`GET /api/archive/v1/works/:archiveId`, and `GET /api/archive/v1/media/:mediaId`.
 
-The deterministic seams are covered by:
+Verify:
+
+1. Unconfigured `/archive.search works [query]`, `/archive.works [query]`,
+   `/archive.work-query [author] [query]`, and `/archive W<n>` return the
+   temporary-unavailable member message.
+2. Search commands pass `query=` (and `author=` for work-query) and show
+   archiveId, title, author, and the exact `total`. Empty search is a short
+   member message that includes total 0, not `Work 不存在。`.
+3. `/archive W<n>` keeps `W<n>` validation and requests that id as `archiveId`.
+   Detail shows title, author, and summary; images are sent in list order; PDFs
+   are sent as files; captions travel with their media.
+4. Contract 404 returns `Work 不存在。`. Unconfigured, network, 401/403, and 5xx
+   stay the unavailable message and never reuse the 404 copy.
+5. A single media download or send failure does not drop the rest of the Work;
+   the failed item gets a clear member-visible hint.
+
+The deterministic seams are covered by Koishi Mock plus a local mock HTTP
+contract server:
 
 ```sh
 corepack yarn vitest run tests/koishi-smoke.test.ts plugins/memebot-archive/tests/index.test.ts
 ```
 
-The old local PDF/ZIP, Koishi database, R2 backup, manifest, lifecycle, Console,
-and Payload adapter scenarios are historical and are not current acceptance
+Live reads against a production content platform remain a manual check. The old
+local PDF/ZIP, Koishi database, R2 backup, manifest, lifecycle, Console, and
+Payload adapter scenarios are historical and are not current acceptance
 criteria.

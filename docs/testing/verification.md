@@ -48,7 +48,7 @@ fails to start.
 
 ## Archive acceptance
 
-Current Archive acceptance is the fail-closed QQ read surface documented in
+Current Archive acceptance is the fail-closed QQ read surface when unconfigured, plus the bound Mock-and-mock-HTTP read surface documented in
 [`archive-qq-shortcuts.md`](archive-qq-shortcuts.md) and
 [`archive-console-browser.md`](archive-console-browser.md). Archive management
 does not live in this repository.
