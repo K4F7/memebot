@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-memebot-archive",
-  "version": "0.1.1-alpha.21",
-  "description": "Archive QQ 只读适配器（内容后端未绑定时 fail-closed）",
+  "version": "0.1.1-alpha.22",
+  "description": "Archive QQ 只读适配器（绑定 Archive Read Contract；未配置时 fail-closed）",
   "license": "MIT",
   "repository": {
     "type": "git",
